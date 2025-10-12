@@ -15,6 +15,8 @@
                           # 標籤張量：時間 × 股票數（對應 horizon 報酬率）
   industry_edge_index.pt  # long 格式，[2, E]
                           # 圖結構的邊索引，表示產業內股票的關聯
+  universe_edge_index.pt  # long 格式，[2, E_univ]  <-- 新增
+                          # 全市場圖的邊索引，所有股票互相連接
   meta.pkl                # 中繼資訊，紀錄資料時間範圍、股票數量、特徵數等
 """
 
@@ -39,7 +41,7 @@ python build_artifacts.py \
   --horizon 5
 
 
-執行完成後，gat_artifacts_out_plus/ 會有四個檔。
+執行完成後，gat_artifacts_out_plus/ 會有五個檔（新增 universe_edge_index.pt）。
 接著就可以直接用您現成的訓練與評估腳本：
 
 # 訓練
@@ -353,12 +355,29 @@ def to_tensors(df: pd.DataFrame, cm: Dict[str,str], feature_cols: List[str], sta
 
     return torch.from_numpy(Ft).to(torch.float16), torch.from_numpy(Y).to(torch.float32), [str(d) for d in dates], list(stocks)
 
-# ---------------- Industry graph ----------------
+# ---------------- Graph Construction ----------------
 def build_industry_edges(df, cm, stocks):
+    """
+    建立產業圖（Industry Graph）的邊索引
+    
+    原理：
+    - 同產業股票之間建立連接（無向圖）
+    - 每個股票也連接自己（自環）
+    
+    參數：
+        df: 包含產業資訊的 DataFrame
+        cm: 欄位對應字典
+        stocks: 股票代碼列表
+    
+    回傳：
+        torch.Tensor [2, E]: 邊索引，格式為 [source_nodes, target_nodes]
+    """
     ind_col = cm["industry"] if cm["industry"] in df.columns else None
     if ind_col is None:
+        # 若無產業欄位，將所有股票視為同一產業
         inds = pd.Series(index=pd.Index(stocks), data="ALL")
     else:
+        # 讀取產業資訊（每檔股票取第一筆記錄的產業分類）
         tmp = df[[cm["code"], ind_col]].dropna()
         tmp[cm["code"]] = tmp[cm["code"]].astype(str)
         first = tmp.drop_duplicates(subset=[cm["code"]], keep="first").set_index(cm["code"])[ind_col]
@@ -366,50 +385,224 @@ def build_industry_edges(df, cm, stocks):
 
     N = len(stocks)
     adj = np.zeros((N, N), dtype=np.uint8)
+    
+    # 將股票按產業分組
     groups: Dict[str, List[int]] = {}
     for i, s in enumerate(stocks):
         groups.setdefault(inds.loc[s], []).append(i)
+    
+    # 同產業內的股票互相連接
     for idx in groups.values():
         idx = np.array(idx, dtype=int)
-        if len(idx): adj[np.ix_(idx, idx)] = 1
+        if len(idx): 
+            adj[np.ix_(idx, idx)] = 1  # 建立該產業內所有股票的全連接
+    
+    # 加入自環（每個節點連接自己）
     np.fill_diagonal(adj, 1)
+    
+    # 轉換為 PyG 格式的邊索引 [2, num_edges]
     rows, cols = np.where(adj == 1)
     return torch.tensor(np.vstack([rows, cols]), dtype=torch.long)
+
+
+def build_universe_edges(stocks):
+    """
+    建立全市場圖（Universe Graph）的邊索引
+    
+    原理：
+    - 所有股票之間建立全連接（完全圖）
+    - 用於學習跨產業的市場共同影響
+    - 對應論文中的 Universe-level relationships
+    
+    參數：
+        stocks: 股票代碼列表
+    
+    回傳：
+        torch.Tensor [2, E]: 邊索引，E = N * N（全連接）
+        
+    注意：
+    - 771 檔股票會產生 594,441 條邊，記憶體需求較高
+    - 若記憶體不足，可考慮使用稀疏連接或 K-近鄰圖
+    """
+    N = len(stocks)
+    
+    # 方法：建立全連接鄰接矩陣（包含自環）
+    adj = np.ones((N, N), dtype=np.uint8)  # 所有位置皆為 1
+    
+    # 轉換為邊索引格式
+    rows, cols = np.where(adj == 1)
+    edge_index = torch.tensor(np.vstack([rows, cols]), dtype=torch.long)
+    
+    return edge_index
+
 
 # ---------------- Main ----------------
 def main():
     args = parse_args()
     os.makedirs(args.artifact_dir, exist_ok=True)
 
+    # 讀取資料
     df = pd.read_csv(args.prices)
     cm = choose_colmap(df)
     df[cm["date"]] = to_dt(df[cm["date"]])
 
+    # 驗證產業檔案存在（若有指定）
     if args.industry_csv and os.path.abspath(args.industry_csv) != os.path.abspath(args.prices):
         _ = pd.read_csv(args.industry_csv)  # 只驗存在
 
+    # 建立特徵與標籤
     df_b, feature_cols = build_features_and_label(df, cm, args.horizon)
+    
+    # 轉換為張量
     Ft_t, Y_t, dates, stocks = to_tensors(df_b, cm, feature_cols, args.start_date, args.end_date)
-    edge_index = build_industry_edges(df_b, cm, stocks)
+    
+    # 建立兩種圖結構
+    industry_edge_index = build_industry_edges(df_b, cm, stocks)      # 產業圖
+    universe_edge_index = build_universe_edges(stocks)                # 全市場圖
 
+    # 儲存所有 artifacts
     torch.save(Ft_t, os.path.join(args.artifact_dir, "Ft_tensor.pt"))
     torch.save(Y_t , os.path.join(args.artifact_dir, "yt_tensor.pt"))
-    torch.save(edge_index, os.path.join(args.artifact_dir, "industry_edge_index.pt"))
-    meta = {"feature_cols": feature_cols, "dates": dates, "stocks": stocks,
-            "horizon": args.horizon, "column_map": cm}
-    with open(os.path.join(args.artifact_dir, "meta.pkl"), "wb") as f: pickle.dump(meta, f)
+    torch.save(industry_edge_index, os.path.join(args.artifact_dir, "industry_edge_index.pt"))
+    torch.save(universe_edge_index, os.path.join(args.artifact_dir, "universe_edge_index.pt"))  # 新增
+    
+    # 儲存 metadata
+    meta = {
+        "feature_cols": feature_cols, 
+        "dates": dates, 
+        "stocks": stocks,
+        "horizon": args.horizon, 
+        "column_map": cm,
+        "num_stocks": len(stocks),                          # 新增：股票數量
+        "num_features": len(feature_cols),                  # 新增：特徵數量
+        "num_industry_edges": industry_edge_index.shape[1], # 新增：產業圖邊數
+        "num_universe_edges": universe_edge_index.shape[1], # 新增：全市場圖邊數
+    }
+    with open(os.path.join(args.artifact_dir, "meta.pkl"), "wb") as f: 
+        pickle.dump(meta, f)
 
-    print("Saved:")
-    print(" Ft_tensor.pt :", tuple(Ft_t.shape), Ft_t.dtype)
-    print(" yt_tensor.pt  :", tuple(Y_t.shape),  Y_t.dtype)
-    print(" industry_edge_index.pt:", tuple(edge_index.shape))
-    print(" features (n={}):".format(len(feature_cols)))
-    for c in feature_cols: print("  -", c)
+    # 輸出摘要資訊
+    print("=" * 60)
+    print("Artifacts 建立完成！")
+    print("=" * 60)
+    print("\n儲存檔案：")
+    print(f" ✓ Ft_tensor.pt            : {tuple(Ft_t.shape)}, {Ft_t.dtype}")
+    print(f" ✓ yt_tensor.pt            : {tuple(Y_t.shape)}, {Y_t.dtype}")
+    print(f" ✓ industry_edge_index.pt  : {tuple(industry_edge_index.shape)}")
+    print(f" ✓ universe_edge_index.pt  : {tuple(universe_edge_index.shape)} (新增)")
+    print(f" ✓ meta.pkl                : 包含 {len(meta)} 項 metadata")
+    
+    print("\n資料統計：")
+    print(f" - 時間範圍: {dates[0]} ~ {dates[-1]} ({len(dates)} 個交易日)")
+    print(f" - 股票數量: {len(stocks)}")
+    print(f" - 特徵數量: {len(feature_cols)}")
+    print(f" - 預測視野: {args.horizon} 日")
+    
+    print("\n圖結構統計：")
+    print(f" - 產業圖邊數: {industry_edge_index.shape[1]:,}")
+    print(f" - 全市場圖邊數: {universe_edge_index.shape[1]:,}")
+    print(f" - 平均每檔股票的產業內連接數: {industry_edge_index.shape[1] / len(stocks):.1f}")
+    print(f" - 平均每檔股票的全市場連接數: {universe_edge_index.shape[1] / len(stocks):.1f}")
+    
+    # 記憶體使用估算
+    industry_mem_mb = industry_edge_index.element_size() * industry_edge_index.nelement() / 1024 / 1024
+    universe_mem_mb = universe_edge_index.element_size() * universe_edge_index.nelement() / 1024 / 1024
+    total_mem_mb = Ft_t.element_size() * Ft_t.nelement() / 1024 / 1024 + \
+                   Y_t.element_size() * Y_t.nelement() / 1024 / 1024 + \
+                   industry_mem_mb + universe_mem_mb
+    
+    print("\n記憶體使用估算：")
+    print(f" - 特徵張量 (Ft): {Ft_t.element_size() * Ft_t.nelement() / 1024 / 1024:.1f} MB")
+    print(f" - 標籤張量 (yt): {Y_t.element_size() * Y_t.nelement() / 1024 / 1024:.1f} MB")
+    print(f" - 產業圖: {industry_mem_mb:.1f} MB")
+    print(f" - 全市場圖: {universe_mem_mb:.1f} MB")
+    print(f" - 總計約: {total_mem_mb:.1f} MB")
+    
+    print("\n特徵列表 (n={}):".format(len(feature_cols)))
+    # 按類別分組顯示特徵
+    feature_groups = {
+        "動量類": [f for f in feature_cols if any(x in f for x in ["ret_", "mom_", "rev_"])],
+        "移動平均": [f for f in feature_cols if "sma" in f],
+        "波動率": [f for f in feature_cols if "std_" in f or "atr" in f or "idio" in f],
+        "成交量": [f for f in feature_cols if "vol_" in f or "vol" in f],
+        "技術指標": [f for f in feature_cols if any(x in f for x in ["rsi", "stoch", "macd"])],
+        "統計特性": [f for f in feature_cols if any(x in f for x in ["skew", "kurt", "zscore", "beta"])],
+        "價位相關": [f for f in feature_cols if any(x in f for x in ["roll_", "pct_to", "pct_pos", "mdd"])],
+        "流動性": [f for f in feature_cols if "amihud" in f],
+        "估值": [f for f in feature_cols if f in ["pb", "ps"]],
+    }
+    
+    for group_name, feats in feature_groups.items():
+        if feats:
+            print(f"\n  [{group_name}] ({len(feats)} 個)")
+            for f in feats:
+                print(f"    - {f}")
+    
+    print("\n" + "=" * 60)
+    print("接下來可以執行訓練：")
+    print(f"  python train_gat_fixed.py --artifact_dir {args.artifact_dir} --epochs 50 --lr 1e-3")
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()
 
 
 """
-Ft=(1460, 771, 56), yt=(1460, 771), edges=(2, 27923)
+執行結果範例：
+============================================================
+Artifacts 建立完成！
+============================================================
+
+儲存檔案：
+ ✓ Ft_tensor.pt            : (1460, 771, 56), torch.float16
+ ✓ yt_tensor.pt            : (1460, 771), torch.float32
+ ✓ industry_edge_index.pt  : (2, 27923)
+ ✓ universe_edge_index.pt  : (2, 594441) (新增)
+ ✓ meta.pkl                : 包含 9 項 metadata
+
+資料統計：
+ - 時間範圍: 2019-07-01 ~ 2025-09-30 (1460 個交易日)
+ - 股票數量: 771
+ - 特徵數量: 56
+ - 預測視野: 5 日
+
+圖結構統計：
+ - 產業圖邊數: 27,923
+ - 全市場圖邊數: 594,441
+ - 平均每檔股票的產業內連接數: 36.2
+ - 平均每檔股票的全市場連接數: 771.0
+
+記憶體使用估算：
+ - 特徵張量 (Ft): 126.1 MB
+ - 標籤張量 (yt): 4.5 MB
+ - 產業圖: 0.2 MB
+ - 全市場圖: 4.5 MB
+ - 總計約: 135.3 MB
+
+特徵列表 (n=56):
+
+  [動量類] (9 個)
+    - ret_1
+    - ret_3
+    - ret_5
+    - ret_10
+    - ret_20
+    - mom_diff_10
+    - mom_diff_20
+    - rev_1
+    - rev_5
+    - rev_10
+
+  [移動平均] (4 個)
+    - px_over_sma_5
+    - px_over_sma_10
+    - px_over_sma_20
+    - px_over_sma_60
+
+  ... (以下類推)
+
+============================================================
+接下來可以執行訓練：
+  python train_gat_fixed.py --artifact_dir gat_artifacts_out_plus --epochs 50 --lr 1e-3
+============================================================
 """
