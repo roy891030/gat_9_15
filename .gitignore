@@ -16,3 +16,5 @@ venv/
 .csv
 # System files
 .DS_Store
+gat_artifacts_out_plus/
+unique_2019q3to2025q3.csv
