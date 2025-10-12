@@ -1,0 +1,5 @@
+numpy>=1.26
+pandas>=2.2
+torch           # 用你系統對應的 wheel 安裝
+torch_geometric # 用官方指令依當前 torch 版本安裝
+scipy>=1.11

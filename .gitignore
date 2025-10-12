@@ -17,7 +17,6 @@ plots_bh/
 *.csv
 
 # Logs or temp files
-*.txt
 *.log
 
 # System files
