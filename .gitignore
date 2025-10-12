@@ -1,0 +1,24 @@
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# Output folders
+gat_artifacts_out_plus/
+plots_bh/
+
+# CSV or large data
+*.csv
+
+# Logs or temp files
+*.txt
+*.log
+
+# System files
+.DS_Store
