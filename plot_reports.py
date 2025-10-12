@@ -10,6 +10,15 @@ python plot_reports.py \
   --out_dir plots_dmfm \
   --top_pct 0.10 --rebalance_days 5 \
   --industry_csv unique_2019q3to2025q3.csv
+
+輸出檔案結構：
+plots_dmfm/
+├── daily_ic.png              # Daily IC time series
+├── pred_dispersion.png       # Prediction cross-sectional std
+├── hitrate_by_month.png      # Monthly directional accuracy
+├── ic_distribution.png       # IC distribution histogram
+├── cum_returns.png           # Cumulative returns comparison
+└── attention_weights.png     # Feature attention weights (DMFM only)
 """
 
 import os
@@ -19,21 +28,21 @@ import pandas as pd
 import torch
 import matplotlib.pyplot as plt
 import matplotlib
-matplotlib.use('Agg')  # 使用非互動式後端
+matplotlib.use('Agg')  # Use non-interactive backend
 
 from train_gat_fixed import GATRegressor, DMFM, load_artifacts, time_split_indices
 
 # ---------- Device Selection ----------
 def pick_device(device_str: str) -> torch.device:
-    """自動選擇可用的計算裝置"""
+    """Auto-select available computing device"""
     s = (device_str or "").lower()
     if s in ("cpu", "cuda", "mps"):
         if s == "cuda" and not torch.cuda.is_available():
-            print("[warn] CUDA 不可用，改用 CPU")
+            print("[warn] CUDA not available, using CPU")
             return torch.device("cpu")
         if s == "mps":
             if not hasattr(torch.backends, "mps") or not torch.backends.mps.is_available():
-                print("[warn] MPS 不可用，改用 CPU")
+                print("[warn] MPS not available, using CPU")
                 return torch.device("cpu")
         return torch.device(s)
     if torch.cuda.is_available():
@@ -47,7 +56,7 @@ def pick_device(device_str: str) -> torch.device:
 EPS = 1e-8
 
 def safe_corr(a, b):
-    """安全計算 Pearson 相關係數"""
+    """Safely compute Pearson correlation coefficient"""
     if a.size < 3:
         return np.nan
     sa, sb = a.std(), b.std()
@@ -58,12 +67,12 @@ def safe_corr(a, b):
 
 
 def parse_dates_list(str_dates):
-    """解析日期字串列表"""
+    """Parse list of date strings"""
     return pd.to_datetime(pd.Series(str_dates), errors="coerce").tolist()
 
 
 def detect_model_type(weights_path, device="cpu"):
-    """自動偵測模型類型"""
+    """Auto-detect model type (DMFM or GATRegressor)"""
     state_dict = torch.load(weights_path, map_location=device)
     dmfm_keys = ["encoder.0.weight", "gat_universe.lin_src.weight", "factor_attn.weight"]
     is_dmfm = any(key in state_dict for key in dmfm_keys)
@@ -72,18 +81,18 @@ def detect_model_type(weights_path, device="cpu"):
 
 def parse_benchmark(benchmark_csv):
     """
-    解析基準 CSV 檔案
+    Parse benchmark CSV file
     
-    支援欄位：
-    - 日期：['date', 'Date', '年月日']
-    - 價格：['收盤價(元)', 'Close', 'Adj Close', '收盤價']
-    - 日報酬：['報酬率％', 'Return', 'ret', 'pct_change']
+    Supported columns:
+    - Date: ['date', 'Date', '年月日']
+    - Price: ['收盤價(元)', 'Close', 'Adj Close', '收盤價']
+    - Daily return: ['報酬率％', 'Return', 'ret', 'pct_change']
     
-    回傳：DataFrame(index=日期, columns=['ret']) 的日報酬率（小數）
+    Returns: DataFrame(index=date, columns=['ret']) with daily returns (decimal)
     """
     df = pd.read_csv(benchmark_csv)
     
-    # 日期欄
+    # Date column
     dcol = None
     for c in ["date", "Date", "年月日"]:
         if c in df.columns:
@@ -95,7 +104,7 @@ def parse_benchmark(benchmark_csv):
     df[dcol] = pd.to_datetime(df[dcol], errors="coerce")
     df = df.dropna(subset=[dcol]).sort_values(dcol).set_index(dcol)
 
-    # 優先用現成報酬欄
+    # Priority: existing return column
     for rc in ["報酬率％", "Return", "ret", "pct_change", "RET", "ret1"]:
         if rc in df.columns:
             r = pd.to_numeric(df[rc], errors="coerce")
@@ -103,7 +112,7 @@ def parse_benchmark(benchmark_csv):
                 r = r / 100.0
             return pd.DataFrame({"ret": r.values}, index=df.index)
 
-    # 否則用收盤價自己算
+    # Otherwise compute from price
     pcol = None
     for c in ["收盤價(元)", "Close", "Adj Close", "收盤價", "close", "adj_close"]:
         if c in df.columns:
@@ -111,7 +120,7 @@ def parse_benchmark(benchmark_csv):
             break
     
     if pcol is None:
-        raise ValueError("benchmark_csv 找不到收盤或報酬欄位")
+        raise ValueError("benchmark_csv: cannot find price or return column")
     
     px = pd.to_numeric(df[pcol], errors="coerce")
     ret = px.pct_change()
@@ -120,9 +129,9 @@ def parse_benchmark(benchmark_csv):
 
 def compound_forward(ret_series: pd.Series, steps: int) -> pd.Series:
     """
-    將日報酬轉成未來 k 日複利報酬
+    Convert daily returns to forward k-day compound returns
     
-    公式：(1+r_t+1) * ... * (1+r_t+k) - 1
+    Formula: (1+r_t+1) * ... * (1+r_t+k) - 1
     """
     if steps <= 1:
         return ret_series.shift(-1)
@@ -141,7 +150,7 @@ def compound_forward(ret_series: pd.Series, steps: int) -> pd.Series:
 
 
 def load_industry_labels(industry_csv, stocks):
-    """載入產業標籤"""
+    """Load industry labels"""
     if not industry_csv or not os.path.exists(industry_csv):
         return None
     
@@ -150,14 +159,14 @@ def load_industry_labels(industry_csv, stocks):
     except Exception:
         return None
 
-    # 股票代碼欄
+    # Stock code column
     sid_col = None
     for c in ["證券代碼_純代碼", "證券代碼", "sid", "StockID", "stock_id"]:
         if c in df.columns:
             sid_col = c
             break
 
-    # 產業欄
+    # Industry column
     ind_col = None
     for c in ["TEJ產業_名稱", "TEJ產業_代碼", "TSE產業_名稱", "industry_TSE", "Industry", "industry", "產業"]:
         if c in df.columns:
@@ -179,26 +188,35 @@ def build_reports(artifact_dir, weights, out_dir,
                   top_pct=0.10, rebalance_days=5,
                   benchmark_csv=None, industry_csv=None):
     """
-    生成完整的視覺化報告
+    Generate comprehensive visualization reports
     
-    生成圖表：
-    1. daily_ic.png - 每日 IC 時序圖
-    2. pred_dispersion.png - 預測離散度
-    3. hitrate_by_month.png - 月度命中率
-    4. cum_returns.png - 累積報酬比較
-    5. attention_heatmap.png - 注意力權重熱圖（僅 DMFM）
-    6. ic_distribution.png - IC 分佈直方圖
+    Generated plots:
+    1. daily_ic.png - Daily IC time series
+    2. pred_dispersion.png - Prediction cross-sectional std
+    3. hitrate_by_month.png - Monthly directional accuracy
+    4. cum_returns.png - Cumulative returns comparison
+    5. attention_weights.png - Feature attention weights (DMFM only)
+    6. ic_distribution.png - IC distribution histogram
+    
+    Output structure:
+    plots_dmfm/
+    ├── daily_ic.png              # Daily IC time series
+    ├── pred_dispersion.png       # Prediction cross-sectional std
+    ├── hitrate_by_month.png      # Monthly directional accuracy
+    ├── ic_distribution.png       # IC distribution histogram
+    ├── cum_returns.png           # Cumulative returns comparison
+    └── attention_weights.png     # Feature attention weights (DMFM only)
     """
     os.makedirs(out_dir, exist_ok=True)
     device = pick_device(device)
     
     print("=" * 60)
-    print("視覺化報告生成")
+    print("Visualization Report Generation")
     print("=" * 60)
-    print(f"使用裝置: {device}")
-    print(f"輸出資料夾: {out_dir}")
+    print(f"Device: {device}")
+    print(f"Output directory: {out_dir}")
 
-    # 載入 artifacts
+    # Load artifacts
     Ft, yt, edge_industry, edge_universe, meta = load_artifacts(artifact_dir)
     Ft = Ft.to(device).float()
     yt = yt.to(device)
@@ -213,12 +231,12 @@ def build_reports(artifact_dir, weights, out_dir,
     stocks = meta.get("stocks", [str(i) for i in range(N)])
     feature_cols = meta.get("feature_cols", [])
 
-    print(f"資料: T={T}, N={N}, F={Fdim}")
-    print(f"測試期: {len(test_idx)} 天")
+    print(f"Data: T={T}, N={N}, F={Fdim}")
+    print(f"Test period: {len(test_idx)} days")
 
-    # 偵測並載入模型
+    # Detect and load model
     model_type = detect_model_type(weights, device=device)
-    print(f"模型類型: {model_type.upper()}")
+    print(f"Model type: {model_type.upper()}")
     
     if model_type == "dmfm":
         model = DMFM(
@@ -237,8 +255,8 @@ def build_reports(artifact_dir, weights, out_dir,
     model.load_state_dict(torch.load(weights, map_location=device))
     model.eval()
 
-    # 收集測試期數據
-    print("\n收集測試期數據...")
+    # Collect test period data
+    print("\nCollecting test period data...")
     daily_ic = []
     daily_dir = []
     pred_std = []
@@ -262,7 +280,7 @@ def build_reports(artifact_dir, weights, out_dir,
             
             x = torch.nan_to_num(x, nan=0.0)
             
-            # 前向傳播
+            # Forward pass
             if model_type == "dmfm":
                 p, _, attn = model(x, edge_industry, edge_universe)
                 if attn is not None:
@@ -286,17 +304,17 @@ def build_reports(artifact_dir, weights, out_dir,
     ser_psd = pd.Series(pred_std, index=pd.to_datetime(test_dates))
 
     # ============================================================
-    # 圖表 1: Daily IC 時序圖
+    # Plot 1: Daily IC Time Series
     # ============================================================
-    print("生成圖表 1/6: Daily IC...")
+    print("Generating plot 1/6: Daily IC...")
     plt.figure(figsize=(12, 5))
     plt.plot(ser_ic.index, ser_ic.values, linewidth=1.5, alpha=0.7)
     m = np.nanmean(ser_ic.values)
     plt.axhline(0, color='gray', linestyle='-', linewidth=0.8)
     if np.isfinite(m):
         plt.axhline(m, color='red', linestyle='--', linewidth=1.5, label=f'Mean IC = {m:.4f}')
-    plt.title(f"Daily IC (測試集) | 平均 IC = {m:.4f}", fontsize=14, fontweight='bold')
-    plt.xlabel("日期", fontsize=12)
+    plt.title(f"Daily IC (Test Set) | Mean IC = {m:.4f}", fontsize=14, fontweight='bold')
+    plt.xlabel("Date", fontsize=12)
     plt.ylabel("IC", fontsize=12)
     plt.legend()
     plt.grid(True, alpha=0.3)
@@ -305,30 +323,30 @@ def build_reports(artifact_dir, weights, out_dir,
     plt.close()
 
     # ============================================================
-    # 圖表 2: 預測離散度（檢測常數預測）
+    # Plot 2: Prediction Dispersion (detect constant predictions)
     # ============================================================
-    print("生成圖表 2/6: 預測離散度...")
+    print("Generating plot 2/6: Prediction dispersion...")
     plt.figure(figsize=(12, 5))
     plt.plot(ser_psd.index, ser_psd.values, linewidth=1.5, alpha=0.7, color='orange')
-    plt.title("預測值截面標準差（測試集）", fontsize=14, fontweight='bold')
-    plt.xlabel("日期", fontsize=12)
-    plt.ylabel("預測標準差", fontsize=12)
+    plt.title("Prediction Cross-Sectional Std (Test Set)", fontsize=14, fontweight='bold')
+    plt.xlabel("Date", fontsize=12)
+    plt.ylabel("Prediction Std", fontsize=12)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, "pred_dispersion.png"), dpi=150)
     plt.close()
 
     # ============================================================
-    # 圖表 3: 月度方向命中率
+    # Plot 3: Monthly Hit Rate
     # ============================================================
-    print("生成圖表 3/6: 月度命中率...")
+    print("Generating plot 3/6: Monthly hit rate...")
     hr_month = ser_dir.groupby(pd.Grouper(freq="M")).mean()
     plt.figure(figsize=(10, 5))
     plt.plot(hr_month.index, hr_month.values, marker='o', linewidth=2, markersize=6)
-    plt.axhline(0.5, color='red', linestyle='--', linewidth=1.5, label='隨機基準 (50%)')
-    plt.title("月度方向準確率（測試集）", fontsize=14, fontweight='bold')
-    plt.xlabel("月份", fontsize=12)
-    plt.ylabel("命中率", fontsize=12)
+    plt.axhline(0.5, color='red', linestyle='--', linewidth=1.5, label='Random baseline (50%)')
+    plt.title("Monthly Directional Accuracy (Test Set)", fontsize=14, fontweight='bold')
+    plt.xlabel("Month", fontsize=12)
+    plt.ylabel("Hit Rate", fontsize=12)
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -336,17 +354,17 @@ def build_reports(artifact_dir, weights, out_dir,
     plt.close()
 
     # ============================================================
-    # 圖表 4: IC 分佈直方圖
+    # Plot 4: IC Distribution Histogram
     # ============================================================
-    print("生成圖表 4/6: IC 分佈...")
+    print("Generating plot 4/6: IC distribution...")
     plt.figure(figsize=(10, 5))
     ic_values = ser_ic.dropna().values
     plt.hist(ic_values, bins=30, alpha=0.7, color='skyblue', edgecolor='black')
-    plt.axvline(m, color='red', linestyle='--', linewidth=2, label=f'平均 IC = {m:.4f}')
+    plt.axvline(m, color='red', linestyle='--', linewidth=2, label=f'Mean IC = {m:.4f}')
     plt.axvline(0, color='gray', linestyle='-', linewidth=1)
-    plt.title("IC 分佈（測試集）", fontsize=14, fontweight='bold')
-    plt.xlabel("IC 值", fontsize=12)
-    plt.ylabel("頻數", fontsize=12)
+    plt.title("IC Distribution (Test Set)", fontsize=14, fontweight='bold')
+    plt.xlabel("IC Value", fontsize=12)
+    plt.ylabel("Frequency", fontsize=12)
     plt.legend()
     plt.grid(True, alpha=0.3, axis='y')
     plt.tight_layout()
@@ -354,9 +372,9 @@ def build_reports(artifact_dir, weights, out_dir,
     plt.close()
 
     # ============================================================
-    # 圖表 5: 累積報酬比較（策略 vs 基準）
+    # Plot 5: Cumulative Returns Comparison (Strategy vs Benchmark)
     # ============================================================
-    print("生成圖表 5/6: 累積報酬...")
+    print("Generating plot 5/6: Cumulative returns...")
     step = max(1, int(rebalance_days))
     take_idx = test_idx[::step] if len(test_idx) > 0 else []
     long_rets = []
@@ -380,7 +398,7 @@ def build_reports(artifact_dir, weights, out_dir,
             P = p[mask].detach().cpu().numpy()
             Y = y[mask].detach().cpu().numpy()
             
-            # 取前 top_pct
+            # Select top top_pct
             qh = np.nanquantile(P, 1.0 - float(top_pct))
             sel = (P >= qh)
             if sel.sum() == 0:
@@ -392,7 +410,7 @@ def build_reports(artifact_dir, weights, out_dir,
     strat = pd.Series(long_rets, index=pd.to_datetime(long_dates)).sort_index()
     strat_cum = (1.0 + strat.fillna(0)).cumprod() - 1.0
 
-    # 基準比較
+    # Benchmark comparison
     bmk_cum = None
     if benchmark_csv and os.path.exists(benchmark_csv):
         try:
@@ -401,24 +419,24 @@ def build_reports(artifact_dir, weights, out_dir,
             bmk_on = fwd.reindex(strat.index)
             bmk_cum = (1.0 + bmk_on.fillna(0)).cumprod() - 1.0
         except Exception as e:
-            print(f"[warn] 無法載入基準: {e}")
+            print(f"[warn] Cannot load benchmark: {e}")
 
     plt.figure(figsize=(12, 6))
     plt.plot(strat_cum.index, strat_cum.values * 100, 
-             linewidth=2.5, label=f"策略（前 {top_pct*100:.0f}%）", color='#2E86AB')
+             linewidth=2.5, label=f"Strategy (top {top_pct*100:.0f}%)", color='#2E86AB')
     if bmk_cum is not None:
         plt.plot(bmk_cum.index, bmk_cum.values * 100, 
-                 linewidth=2.5, label="基準 (0050)", color='#A23B72', linestyle='--')
-    plt.title("累積報酬比較（測試集）", fontsize=14, fontweight='bold')
-    plt.xlabel("日期", fontsize=12)
-    plt.ylabel("累積報酬 (%)", fontsize=12)
+                 linewidth=2.5, label="Benchmark (0050)", color='#A23B72', linestyle='--')
+    plt.title("Cumulative Returns Comparison (Test Set)", fontsize=14, fontweight='bold')
+    plt.xlabel("Date", fontsize=12)
+    plt.ylabel("Cumulative Return (%)", fontsize=12)
     plt.legend(fontsize=11)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, "cum_returns.png"), dpi=150)
     plt.close()
 
-    # 輸出統計
+    # Output statistics
     def stats(x):
         x = pd.Series(x).dropna()
         if x.empty:
@@ -430,77 +448,77 @@ def build_reports(artifact_dir, weights, out_dir,
         return dict(n=len(x), mean=mu, std=sd, ann=mu*freq, sharpe=sharpe, hit=(x>0).mean())
     
     s_strat = stats(strat.values)
-    print(f"\n策略統計: n={s_strat['n']} | 年化={s_strat['ann']:.4f} | 夏普={s_strat['sharpe']:.3f} | 勝率={s_strat['hit']:.3f}")
+    print(f"\nStrategy stats: n={s_strat['n']} | ann_ret={s_strat['ann']:.4f} | sharpe={s_strat['sharpe']:.3f} | hitrate={s_strat['hit']:.3f}")
     
     if bmk_cum is not None:
         s_bmk = stats(bmk_on.values)
-        print(f"基準統計: n={s_bmk['n']} | 年化={s_bmk['ann']:.4f} | 夏普={s_bmk['sharpe']:.3f} | 勝率={s_bmk['hit']:.3f}")
+        print(f"Benchmark stats: n={s_bmk['n']} | ann_ret={s_bmk['ann']:.4f} | sharpe={s_bmk['sharpe']:.3f} | hitrate={s_bmk['hit']:.3f}")
 
     # ============================================================
-    # 圖表 6: 注意力權重熱圖（僅 DMFM）
+    # Plot 6: Attention Weights Heatmap (DMFM only)
     # ============================================================
     if model_type == "dmfm" and all_attentions and len(all_attentions) > 0 and len(feature_cols) > 0:
-        print("生成圖表 6/6: 注意力權重熱圖...")
+        print("Generating plot 6/6: Attention weights heatmap...")
         
-        # 平均所有測試期的注意力權重
+        # Average attention weights across all test periods
         attn_avg = np.concatenate(all_attentions, axis=0).mean(axis=0)  # [F]
         
-        # 只顯示前 30 個特徵（避免太擠）
+        # Show only top 30 features (avoid overcrowding)
         n_show = min(30, len(feature_cols))
         top_indices = np.argsort(attn_avg)[-n_show:][::-1]
         
         plt.figure(figsize=(10, 8))
         plt.barh(range(n_show), attn_avg[top_indices], color='steelblue')
         plt.yticks(range(n_show), [feature_cols[i] for i in top_indices])
-        plt.xlabel("平均注意力權重", fontsize=12)
-        plt.title("特徵注意力權重（Top 30）", fontsize=14, fontweight='bold')
+        plt.xlabel("Average Attention Weight", fontsize=12)
+        plt.title("Feature Attention Weights (Top 30)", fontsize=14, fontweight='bold')
         plt.gca().invert_yaxis()
         plt.grid(True, alpha=0.3, axis='x')
         plt.tight_layout()
         plt.savefig(os.path.join(out_dir, "attention_weights.png"), dpi=150)
         plt.close()
         
-        print(f"\n注意力權重最高的前 5 個特徵：")
+        print(f"\nTop 5 features by attention weight:")
         for i, idx in enumerate(top_indices[:5]):
             print(f"  {i+1}. {feature_cols[idx]}: {attn_avg[idx]:.6f}")
     
     print("\n" + "=" * 60)
-    print(f"所有圖表已儲存至: {out_dir}")
+    print(f"All plots saved to: {out_dir}")
     print("=" * 60)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="生成視覺化報告")
+    ap = argparse.ArgumentParser(description="Generate visualization reports")
     
-    # 基本參數
+    # Basic parameters
     ap.add_argument("--artifact_dir", type=str, default="./gat_artifacts_out_plus",
-                    help="Artifacts 資料夾路徑")
+                    help="Artifacts directory path")
     ap.add_argument("--weights", type=str, default="./gat_artifacts_out_plus/gat_regressor.pt",
-                    help="模型權重檔路徑")
+                    help="Model weights file path")
     ap.add_argument("--out_dir", type=str, default="./plots_dmfm",
-                    help="輸出圖表資料夾")
+                    help="Output plots directory")
     ap.add_argument("--device", type=str, default="cuda",
-                    help="計算裝置: cpu, cuda, mps, 或 auto")
+                    help="Computing device: cpu, cuda, mps, or auto")
     
-    # 模型參數
+    # Model parameters
     ap.add_argument("--tanh_cap", type=float, default=0.2,
-                    help="輸出 tanh 限制範圍")
+                    help="Output tanh cap range")
     ap.add_argument("--hid", type=int, default=64,
-                    help="隱藏層維度")
+                    help="Hidden layer dimension")
     ap.add_argument("--heads", type=int, default=2,
-                    help="GAT 注意力頭數")
+                    help="GAT attention heads")
     
-    # 策略參數
+    # Strategy parameters
     ap.add_argument("--top_pct", type=float, default=0.10,
-                    help="選股百分比")
+                    help="Stock selection percentage")
     ap.add_argument("--rebalance_days", type=int, default=5,
-                    help="再平衡頻率（天數）")
+                    help="Rebalance frequency (days)")
     
-    # 可選檔案
+    # Optional files
     ap.add_argument("--benchmark_csv", type=str, default=None,
-                    help="基準 CSV 檔案（例如 GAT0050.csv）")
+                    help="Benchmark CSV file (e.g., GAT0050.csv)")
     ap.add_argument("--industry_csv", type=str, default=None,
-                    help="產業對照表 CSV 檔案")
+                    help="Industry mapping CSV file")
     
     args = ap.parse_args()
 
