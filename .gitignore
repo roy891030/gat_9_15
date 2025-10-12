@@ -12,5 +12,7 @@ venv/
 # Logs or temp files
 *.log
 
+
+.csv
 # System files
 .DS_Store
