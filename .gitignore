@@ -9,13 +9,6 @@ __pycache__/
 env/
 venv/
 
-# Output folders
-gat_artifacts_out_plus/
-plots_bh/
-
-# CSV or large data
-*.csv
-
 # Logs or temp files
 *.log
 
