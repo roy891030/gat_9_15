@@ -308,10 +308,11 @@ def build_features_and_label(df: pd.DataFrame, cm: Dict[str,str], horizon: int) 
     feats = pd.concat(feats_list, axis=0).sort_index()
     df = pd.concat([df, feats], axis=1)
 
-    # Label：未來 k 日報酬 → 每日截面去均值
+    # Label：未來 k 日報酬（保留原始值，不做截面去均值）
     fwd = df.groupby(cm["code"])[cm["close"]].shift(-horizon)
     df["fwd_ret_k"] = (fwd - df[cm["close"]]) / df[cm["close"]]
-    df["yt"] = df.groupby(cm["date"])["fwd_ret_k"].transform(lambda s: s - np.nanmean(s.values))
+    # ⭐ 修改：不做截面去均值，因為 DMFM 模型會在訓練時處理
+    df["yt"] = df["fwd_ret_k"]
 
     # 特徵清單（存在才保留）
     wanted = [
@@ -345,8 +346,9 @@ def to_tensors(df: pd.DataFrame, cm: Dict[str,str], feature_cols: List[str], sta
         A = np.full((T, N), np.nan, dtype=np.float32)
         if not piv.empty:
             A[piv.index.values[:,None], piv.columns.values[None,:]] = piv.values
-        Z = xsec_zscore(A)
-        Ft[:,:,k] = np.nan_to_num(Z, nan=0.0, posinf=0.0, neginf=0.0)
+        # ⭐ 修改：不做截面標準化，保留原始特徵值
+        # DMFM 模型會使用 BatchNorm 做標準化
+        Ft[:,:,k] = np.nan_to_num(A, nan=0.0, posinf=0.0, neginf=0.0)
 
     piv_y = df.pivot_table(index="t_idx", columns="s_idx", values="yt", aggfunc="first")
     Y = np.full((T, N), np.nan, dtype=np.float32)
