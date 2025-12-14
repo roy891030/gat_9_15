@@ -180,6 +180,39 @@ def compute_loss(deep_factor, f_hat, returns, lambda_attn=0.1, lambda_ic=1.0):
     return loss, metrics
 
 
+def filter_edge_index(edge_index, mask):
+    """
+    根據節點 mask 過濾並重新映射 edge_index
+
+    參數：
+        edge_index: [2, E] 原始邊索引
+        mask: [N] bool tensor，標記哪些節點是有效的
+
+    回傳：
+        filtered_edge_index: [2, E'] 過濾並重新映射後的邊索引
+    """
+    # 建立舊索引到新索引的映射
+    # old_to_new[i] = j 表示原始節點 i 在過濾後的位置是 j
+    old_to_new = torch.full((mask.size(0),), -1, dtype=torch.long, device=mask.device)
+    old_to_new[mask] = torch.arange(mask.sum(), device=mask.device)
+
+    # 過濾邊：只保留兩端節點都有效的邊
+    src, dst = edge_index[0], edge_index[1]
+    valid_edges = mask[src] & mask[dst]
+
+    if valid_edges.sum() == 0:
+        # 如果沒有有效的邊，返回空的 edge_index
+        return torch.empty((2, 0), dtype=torch.long, device=edge_index.device)
+
+    # 重新映射索引
+    filtered_edge_index = torch.stack([
+        old_to_new[src[valid_edges]],
+        old_to_new[dst[valid_edges]]
+    ], dim=0)
+
+    return filtered_edge_index
+
+
 def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei,
                     train_indices, lambda_attn, lambda_ic, device):
     """訓練一個 epoch"""
@@ -207,8 +240,12 @@ def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei,
         x_t = x_t[mask]
         y_t = y_t[mask]
 
+        # 過濾並重新映射邊索引
+        industry_ei_filtered = filter_edge_index(industry_ei, mask)
+        universe_ei_filtered = filter_edge_index(universe_ei, mask)
+
         # Forward
-        deep_factor, attn_weights, contexts = model(x_t, industry_ei, universe_ei)
+        deep_factor, attn_weights, contexts = model(x_t, industry_ei_filtered, universe_ei_filtered)
 
         # Attention estimate
         f_hat = model.interpret_factor(x_t, attn_weights)
@@ -257,8 +294,12 @@ def evaluate(model, Ft, yt, industry_ei, universe_ei, test_indices, device):
         x_t = x_t[mask]
         y_t = y_t[mask]
 
+        # 過濾並重新映射邊索引
+        industry_ei_filtered = filter_edge_index(industry_ei, mask)
+        universe_ei_filtered = filter_edge_index(universe_ei, mask)
+
         # Forward
-        deep_factor, attn_weights, contexts = model(x_t, industry_ei, universe_ei)
+        deep_factor, attn_weights, contexts = model(x_t, industry_ei_filtered, universe_ei_filtered)
 
         # 計算指標
         ic = compute_ic(deep_factor, y_t)
