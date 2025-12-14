@@ -23,6 +23,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATConv
 
+__all__ = ['DMFM_Wei2022', 'DMFM_Lite', 'GATRegressor']
+
 
 class DMFM_Wei2022(nn.Module):
     """
@@ -291,6 +293,36 @@ class DMFM_Lite(nn.Module):
         contexts = {'C': C, 'C_I': C_I, 'C_U': C_U, 'H_I': H_I, 'H_U': H_U}
 
         return deep_factor, attn_weights, contexts
+
+
+class GATRegressor(nn.Module):
+    """
+    簡化版 GAT 模型（向後相容）
+    - 兩層 GAT + 線性輸出
+    - 僅使用單一圖結構（產業圖）
+    """
+    def __init__(self, in_dim, hid=64, heads=2, dropout=0.1, tanh_cap=None):
+        super().__init__()
+        self.gat1 = GATConv(in_dim, hid, heads=heads, dropout=dropout)
+        self.gat2 = GATConv(hid*heads, hid, heads=1, dropout=dropout)
+        self.lin = nn.Linear(hid, 1)
+        self.tanh_cap = tanh_cap
+
+    def forward(self, x, edge_index, edge_universe=None):
+        """
+        參數：
+            x: [N, F] 特徵矩陣
+            edge_index: [2, E] 邊索引（產業圖）
+            edge_universe: 忽略（保持向後相容）
+        """
+        x = self.gat1(x, edge_index)
+        x = F.elu(x)
+        x = self.gat2(x, edge_index)
+        x = F.elu(x)
+        out = self.lin(x).squeeze(-1)
+        if self.tanh_cap is not None:
+            out = self.tanh_cap * torch.tanh(out)
+        return out
 
 
 if __name__ == "__main__":

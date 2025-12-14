@@ -41,6 +41,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pandas as pd
 from torch_geometric.nn import GATConv
+from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM
 
 # -------- Device Selection --------
 def pick_device(device_str: str) -> torch.device:
@@ -146,140 +147,6 @@ def load_industry_map(industry_csv, stocks):
     return {s: m.get(s, "UNK") for s in stocks}
 
 
-# -------- Models --------
-class GATRegressor(nn.Module):
-    """
-    原始簡化版 GAT 模型（向後相容）
-    - 兩層 GAT + 線性輸出
-    - 僅使用單一圖結構（產業圖）
-    """
-    def __init__(self, in_dim, hid=64, heads=2, dropout=0.1, tanh_cap=None):
-        super().__init__()
-        self.gat1 = GATConv(in_dim, hid, heads=heads, dropout=dropout)
-        self.gat2 = GATConv(hid*heads, hid, heads=1, dropout=dropout)
-        self.lin = nn.Linear(hid, 1)
-        self.tanh_cap = tanh_cap
-        
-    def forward(self, x, edge_index, edge_universe=None):
-        """
-        參數：
-            x: [N, F] 特徵矩陣
-            edge_index: [2, E] 邊索引（產業圖）
-            edge_universe: 忽略（保持向後相容）
-        """
-        x = self.gat1(x, edge_index); x = F.elu(x)
-        x = self.gat2(x, edge_index); x = F.elu(x)
-        out = self.lin(x).squeeze(-1)
-        if self.tanh_cap is not None:
-            out = self.tanh_cap * torch.tanh(out)
-        return out
-
-
-class DMFM(nn.Module):
-    """
-    Deep Multi-Factor Model（完整版，對齊論文）
-    
-    架構：
-    1. 特徵編碼器：原始特徵 -> 隱藏表示
-    2. 產業 GAT：學習產業內影響 H_I
-    3. 產業中性化：C_bar_I = C - H_I
-    4. 全市場 GAT：學習市場共同影響 H_U
-    5. 全市場中性化：C_bar_U = C_bar_I - H_U
-    6. 階層式特徵拼接：[C || C_bar_I || C_bar_U]
-    7. 因子頭：輸出深度因子
-    8. 注意力模組：解釋深度因子組成（可選）
-    """
-    def __init__(self, in_dim, hid=64, heads=2, dropout=0.1, tanh_cap=None, 
-                 use_factor_attention=True):
-        super().__init__()
-        
-        # 1. 特徵編碼器（對應論文的 Stock Context Encoder）
-        self.encoder = nn.Sequential(
-            nn.Linear(in_dim, hid),
-            nn.BatchNorm1d(hid),  # 對應論文的 BatchNorm (z-score normalization)
-            nn.ELU()
-        )
-        
-        # 2. 產業 GAT（學習產業內影響）
-        self.gat_industry = GATConv(hid, hid, heads=heads, dropout=dropout)
-        
-        # 3. 全市場 GAT（學習市場共同影響）
-        # 輸入是產業中性化後的特徵，維度為 hid*heads
-        self.gat_universe = GATConv(hid*heads, hid, heads=heads, dropout=dropout)
-        
-        # 4. 因子頭（從階層式特徵輸出深度因子）
-        # 拼接三層特徵：C_t (hid*heads) + C_bar_I (hid*heads) + C_bar_U (hid*heads)
-        concat_dim = hid*heads * 3
-        self.factor_head = nn.Sequential(
-            nn.Linear(concat_dim, hid),
-            nn.LeakyReLU(0.2),
-            nn.Linear(hid, 1)
-        )
-        
-        # 5. 因子注意力模組（Factor Attention，用於解釋）
-        self.use_factor_attention = use_factor_attention
-        if use_factor_attention:
-            self.factor_attn = nn.Linear(in_dim, in_dim)
-        
-        self.tanh_cap = tanh_cap
-        
-    def forward(self, x_raw, edge_industry, edge_universe):
-        """
-        前向傳播（對應論文 Section 3.2）
-        
-        參數：
-            x_raw: [N, F] 原始特徵矩陣
-            edge_industry: [2, E_ind] 產業圖邊索引
-            edge_universe: [2, E_univ] 全市場圖邊索引
-        
-        回傳：
-            deep_factor: [N] 深度因子預測值
-            factor_estimate: [N] 注意力估計的因子（若啟用）
-            attn_weights: [N, F] 注意力權重（若啟用）
-        """
-        # Step 1: 編碼原始特徵 -> C^t（論文公式 1）
-        C_t = self.encoder(x_raw)  # [N, hid]
-        
-        # Step 2: 學習產業影響 H^t_I（論文公式 3）
-        H_I = self.gat_industry(C_t, edge_industry)  # [N, hid*heads]
-        H_I = F.elu(H_I)
-        
-        # Step 3: 產業中性化 C_bar_I = C - H_I（論文公式 4）
-        # 需要先將 C_t 擴展到與 H_I 相同維度
-        C_t_expanded = C_t.repeat(1, self.gat_industry.heads)  # [N, hid*heads]
-        C_bar_I = C_t_expanded - H_I  # [N, hid*heads]
-        
-        # Step 4: 學習全市場影響 H^t_U（論文公式 5）
-        H_U = self.gat_universe(C_bar_I, edge_universe)  # [N, hid*heads]
-        H_U = F.elu(H_U)
-        
-        # Step 5: 全市場中性化 C_bar_U = C_bar_I - H_U（論文公式 6）
-        C_bar_U = C_bar_I - H_U  # [N, hid*heads]
-        
-        # Step 6: 階層式特徵拼接（論文公式 7）
-        hierarchical_features = torch.cat([C_t_expanded, C_bar_I, C_bar_U], dim=-1)
-        
-        # Step 7: 輸出深度因子
-        deep_factor = self.factor_head(hierarchical_features).squeeze(-1)  # [N]
-        
-        # 限制輸出範圍（可選）
-        if self.tanh_cap is not None:
-            deep_factor = self.tanh_cap * torch.tanh(deep_factor)
-        
-        # Step 8: 因子注意力模組（論文公式 9-12）
-        if self.use_factor_attention:
-            # 計算注意力權重
-            attn_logits = self.factor_attn(x_raw)  # [N, F]
-            attn_weights = F.softmax(attn_logits, dim=-1)  # [N, F]
-            
-            # 注意力估計的因子（原始特徵的加權和）
-            factor_estimate = (x_raw * attn_weights).sum(dim=-1)  # [N]
-            
-            return deep_factor, factor_estimate, attn_weights
-        else:
-            return deep_factor, None, None
-
-
 # -------- Loss Functions --------
 def corr_loss(pred, target):
     """
@@ -312,13 +179,9 @@ def evaluate_mse(model, Ft, yt, edge_industry, edge_universe, indices, device="c
         mask = torch.isfinite(y)
         if mask.sum()==0: continue
         x = torch.nan_to_num(x, nan=0.0)
-        
-        # 根據模型類型選擇前向傳播方式
-        if isinstance(model, DMFM):
-            p, _, _ = model(x, edge_industry.to(device), edge_universe.to(device))
-        else:
-            p = model(x, edge_industry.to(device))
-        
+
+        p = model(x, edge_industry.to(device))
+
         s += F.mse_loss(p[mask], y[mask]).item()
         c += 1
     return s / max(c,1)
@@ -359,27 +222,14 @@ def train(args):
     print(f"產業分組: {len(groups)} 個產業")
 
     # 建立模型
-    if args.loss == "dmfm":
-        # 使用完整 DMFM 架構
-        model = DMFM(
-            in_dim=Fdim, 
-            hid=args.hid, 
-            heads=args.heads, 
-            dropout=args.dropout, 
-            tanh_cap=args.tanh_cap,
-            use_factor_attention=True
-        ).to(device)
-        print("模型架構: DMFM (Deep Multi-Factor Model)")
-    else:
-        # 使用簡化版 GAT（向後相容）
-        model = GATRegressor(
-            in_dim=Fdim, 
-            hid=args.hid, 
-            heads=args.heads, 
-            dropout=args.dropout, 
-            tanh_cap=args.tanh_cap
-        ).to(device)
-        print("模型架構: GATRegressor (簡化版)")
+    model = GATRegressor(
+        in_dim=Fdim,
+        hid=args.hid,
+        heads=args.heads,
+        dropout=args.dropout,
+        tanh_cap=args.tanh_cap
+    ).to(device)
+    print("模型架構: GATRegressor (實驗性訓練)")
     
     # 計算參數量
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -425,35 +275,6 @@ def train(args):
             var_pen = torch.var(pred[mask])
             loss = cind + args.alpha_mse*mse_anchor - args.lambda_var*var_pen
             score = 1.0 - cind.item()
-            
-        elif args.loss == "dmfm":
-            # 完整 DMFM 損失（論文公式 13）
-            # L = d^t_k - b^t_k - c_k
-            
-            # 1. 注意力估計誤差 d^t_k（論文：improving attention estimate）
-            if factor_estimate is not None:
-                d_attn = torch.norm(pred[mask] - factor_estimate[mask], p=2)
-            else:
-                d_attn = torch.tensor(0.0, device=device)
-            
-            # 2. 因子收益 b^t_k（簡化：用相關性代替截面回歸）
-            c = corr_loss(pred[mask], y[mask])
-            b_factor = -c  # 負相關性損失 = 相關性（越大越好）
-            
-            # 3. ICIR / IC（用 IC 近似）
-            ic_term = c
-            
-            # 4. 輔助項：MSE 錨定 + 變異數懲罰
-            mse_anchor = F.mse_loss(pred[mask], y[mask])
-            var_pen = torch.var(pred[mask])
-            
-            # 綜合損失
-            loss = (args.lambda_attn * d_attn +  # 注意力估計誤差
-                    ic_term +                     # IC 損失
-                    args.alpha_mse * mse_anchor - # MSE 錨定
-                    args.lambda_var * var_pen)    # 變異數鼓勵
-            
-            score = -ic_term.item()  # 用 IC 作為 score
         else:
             # 預設：MSE
             loss = F.mse_loss(pred[mask], y[mask])
@@ -471,16 +292,12 @@ def train(args):
             mask = torch.isfinite(y)
             if mask.sum()==0: continue
             x = torch.nan_to_num(x, nan=0.0)
-            
+
             # 前向傳播
-            if isinstance(model, DMFM):
-                pred, factor_estimate, _ = model(x, edge_industry, edge_universe)
-            else:
-                pred = model(x, edge_industry)
-                factor_estimate = None
-            
+            pred = model(x, edge_industry)
+
             # 計算損失
-            loss, score = step_loss(pred, y, mask, factor_estimate)
+            loss, score = step_loss(pred, y, mask, None)
             
             # 反向傳播
             opt.zero_grad()
@@ -501,14 +318,10 @@ def train(args):
                 mask = torch.isfinite(y)
                 if mask.sum()==0: continue
                 x = torch.nan_to_num(x, nan=0.0)
-                
-                if isinstance(model, DMFM):
-                    p, factor_estimate, _ = model(x, edge_industry, edge_universe)
-                else:
-                    p = model(x, edge_industry)
-                    factor_estimate = None
-                
-                _, s = step_loss(p, y, mask, factor_estimate)
+
+                p = model(x, edge_industry)
+
+                _, s = step_loss(p, y, mask, None)
                 val_scores += s
                 vsteps += 1
             val_score = val_scores / max(vsteps,1)
@@ -582,8 +395,8 @@ if __name__ == "__main__":
                     help="輸出 tanh 限制範圍（None 表示不限制）")
     
     # 損失函數
-    ap.add_argument("--loss", type=str, default="huber", 
-                    choices=["mse", "huber", "corr_mse", "corr_mse_ind", "dmfm"],
+    ap.add_argument("--loss", type=str, default="huber",
+                    choices=["mse", "huber", "corr_mse", "corr_mse_ind"],
                     help="損失函數類型")
     ap.add_argument("--huber_delta", type=float, default=0.02,
                     help="Huber loss 的 delta 參數")
