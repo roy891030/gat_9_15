@@ -1,0 +1,20 @@
+# 排除模型權重檔
+*.pt
+*.pth
+*.ckpt
+
+# 排除資料檔
+*.csv
+*.parquet
+
+# 排除 artifacts 資料夾
+gat_artifacts_*/
+experiments/
+
+# 排除 Python cache
+__pycache__/
+*.pyc
+*.pyo
+# 虛擬環境
+.venv/
+venv/
