@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-# plot_reports.py
+# evaluate_portfolio.py
 """
 生成視覺化報告（支援 DMFM 和 GATRegressor）
 
 執行方式：
-python plot_reports.py \
+python evaluate_portfolio.py \
   --artifact_dir gat_artifacts_out_plus \
   --weights gat_artifacts_out_plus/gat_regressor.pt \
   --device cuda \
@@ -32,8 +32,8 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # 使用非互動式後端
 
-from train_gat_fixed import GATRegressor, DMFM, load_artifacts, time_split_indices
-
+from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
+from train_gat_fixed import load_artifacts, time_split_indices
 # ---------- Device Selection ----------
 def pick_device(device_str: str) -> torch.device:
     """自動選擇可用的計算裝置"""
