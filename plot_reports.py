@@ -32,7 +32,8 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 
-from train_gat_fixed import GATRegressor, DMFM, load_artifacts, time_split_indices
+from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
+from train_gat_fixed import load_artifacts, time_split_indices
 
 # ---------- Device Selection ----------
 def pick_device(device_str: str) -> torch.device:

@@ -41,7 +41,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pandas as pd
 from torch_geometric.nn import GATConv
-from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM
+from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
 
 # -------- Device Selection --------
 def pick_device(device_str: str) -> torch.device:
