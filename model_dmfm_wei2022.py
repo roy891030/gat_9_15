@@ -145,11 +145,11 @@ class DMFM_Wei2022(nn.Module):
             attn_weights: [N, F] 注意力權重（若啟用）
             contexts: dict 包含三種特徵 (用於分析)
         """
-        N, F = x.shape
+        N, num_features = x.shape
 
         # ==================== Step 1: Stock Context Encoding ====================
         # BatchNorm（等價於截面 z-score）
-        x_norm = self.batch_norm(x)  # [N, F]
+        x_norm = self.batch_norm(x)  # [N, num_features]
 
         # MLP Encoding
         C = self.encoder(x_norm)  # [N, hidden_dim]
