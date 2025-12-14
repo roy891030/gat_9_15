@@ -355,7 +355,8 @@ def to_tensors(df: pd.DataFrame, cm: Dict[str,str], feature_cols: List[str], sta
     if not piv_y.empty:
         Y[piv_y.index.values[:,None], piv_y.columns.values[None,:]] = piv_y.values
 
-    return torch.from_numpy(Ft).to(torch.float16), torch.from_numpy(Y).to(torch.float32), [str(d) for d in dates], list(stocks)
+    # ⭐ 修改：統一使用 float32，避免訓練時的類型不匹配
+    return torch.from_numpy(Ft).to(torch.float32), torch.from_numpy(Y).to(torch.float32), [str(d) for d in dates], list(stocks)
 
 # ---------------- Graph Construction ----------------
 def build_industry_edges(df, cm, stocks):
