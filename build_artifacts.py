@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# build_artifacts.py
 """
 建立 GAT 模型所需的 artifacts（從單一 CSV 檔，且該檔已包含產業欄位）。
 

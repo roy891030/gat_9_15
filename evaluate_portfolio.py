@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+# plot_reports.py
 """
 生成視覺化報告（支援 DMFM 和 GATRegressor）
 

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# train_dmfm_wei2022.py
 """
 DMFM Wei et al. (2022) 訓練腳本
 

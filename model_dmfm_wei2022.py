@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# model_dmfm_wei2022.py
 """
 Deep Multi-Factor Model (DMFM) - Wei et al. (2022) 完整實作
 

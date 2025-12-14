@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+# train_gat_fixed.py
 """
 source .venv/bin/activate
 
