@@ -31,7 +31,7 @@ def parse_args():
     ap = argparse.ArgumentParser(description="訓練 DMFM (Wei et al. 2022)")
     ap.add_argument("--artifact_dir", default="gat_artifacts_out_plus", help="Artifacts 資料夾")
     ap.add_argument("--epochs", type=int, default=200, help="訓練週期數")
-    ap.add_argument("--lr", type=float, default=1e-3, help="學習率")
+    ap.add_argument("--lr", type=float, default=1e-4, help="學習率（降低以提高穩定性）")
     ap.add_argument("--device", default="auto", help="計算裝置: cpu, cuda, mps, auto")
     ap.add_argument("--hidden_dim", type=int, default=64, help="隱藏層維度")
     ap.add_argument("--heads", type=int, default=2, help="GAT 注意力頭數")
@@ -159,15 +159,18 @@ def compute_loss(deep_factor, f_hat, returns, lambda_attn=0.1, lambda_ic=1.0):
 
     # 2. Factor Return: b (cross-sectional regression)
     b = cross_sectional_regression(deep_factor, returns)
-    b_tensor = torch.tensor(b, device=deep_factor.device)
+    # Clip factor return to prevent extreme values
+    b_clipped = max(min(b, 10.0), -10.0)
+    b_tensor = torch.tensor(b_clipped, device=deep_factor.device)
 
     # 3. Information Coefficient
     ic = compute_ic(deep_factor, returns)
     ic_penalty = 1.0 - ic  # 最小化 (1 - IC) 等價於最大化 IC
     ic_penalty_tensor = torch.tensor(ic_penalty, device=deep_factor.device)
 
-    # 4. 綜合損失
-    loss = lambda_attn * d + lambda_ic * ic_penalty_tensor - b_tensor
+    # 4. 綜合損失（降低 factor return 的權重以提高穩定性）
+    lambda_b = 0.01  # Factor return 權重
+    loss = lambda_attn * d + lambda_ic * ic_penalty_tensor - lambda_b * b_tensor
 
     metrics = {
         'loss': loss.item(),
@@ -244,6 +247,10 @@ def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei,
         industry_ei_filtered = filter_edge_index(industry_ei, mask)
         universe_ei_filtered = filter_edge_index(universe_ei, mask)
 
+        # 跳過邊數過少的時間點（圖結構不足）
+        if industry_ei_filtered.shape[1] < 10 or universe_ei_filtered.shape[1] < 100:
+            continue
+
         # Forward
         deep_factor, attn_weights, contexts = model(x_t, industry_ei_filtered, universe_ei_filtered)
 
@@ -252,6 +259,11 @@ def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei,
 
         # 計算損失
         loss, metrics = compute_loss(deep_factor, f_hat, y_t, lambda_attn, lambda_ic)
+
+        # 檢查 NaN/Inf
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"[警告] 時間點 {t} 出現 NaN/Inf loss，跳過此步驟")
+            continue
 
         # Backward
         optimizer.zero_grad()
@@ -297,6 +309,10 @@ def evaluate(model, Ft, yt, industry_ei, universe_ei, test_indices, device):
         # 過濾並重新映射邊索引
         industry_ei_filtered = filter_edge_index(industry_ei, mask)
         universe_ei_filtered = filter_edge_index(universe_ei, mask)
+
+        # 跳過邊數過少的時間點（圖結構不足）
+        if industry_ei_filtered.shape[1] < 10 or universe_ei_filtered.shape[1] < 100:
+            continue
 
         # Forward
         deep_factor, attn_weights, contexts = model(x_t, industry_ei_filtered, universe_ei_filtered)
