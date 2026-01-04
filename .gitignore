@@ -1,9 +1,25 @@
-<<<<<<< HEAD
-# Python cache files
+# Model weights
+*.pt
+*.pth
+*.ckpt
+
+# Data files
+*.csv
+*.parquet
+
+# Generated artifacts and experiment outputs
+artifacts_*/
+gat_artifacts_*/
+experiments/
+plots_*/
+results_*.txt
+RESULTS_SUMMARY.md
+train_*.log
+
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
 
 # Virtual environment
 .venv/
@@ -13,31 +29,5 @@ venv/
 # Logs or temp files
 *.log
 
-
-.csv
 # System files
 .DS_Store
-gat_artifacts_out_plus/
-unique_2019q3to2025q3.csv
-=======
-# 排除模型權重檔
-*.pt
-*.pth
-*.ckpt
-
-# 排除資料檔
-*.csv
-*.parquet
-
-# 排除 artifacts 資料夾
-gat_artifacts_*/
-experiments/
-
-# 排除 Python cache
-__pycache__/
-*.pyc
-*.pyo
-# 虛擬環境
-.venv/
-venv/
->>>>>>> origin/main
