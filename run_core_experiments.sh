@@ -148,7 +148,7 @@ python analyze_contexts.py \
 
 python visualize_factor_attention.py \
   --artifact_dir artifacts_medium \
-  --model_path artifacts_medium/dmfm_wei2022_best.pt \
+  --weights artifacts_medium/dmfm_wei2022_best.pt \
   --output_dir experiments/exp_m4_attention \
   --device cpu
 
@@ -213,7 +213,7 @@ python analyze_contexts.py \
 
 python visualize_factor_attention.py \
   --artifact_dir artifacts_long \
-  --model_path artifacts_long/dmfm_wei2022_best.pt \
+  --weights artifacts_long/dmfm_wei2022_best.pt \
   --output_dir experiments/exp_l4_attention \
   --device cpu \
   --top_k 20
