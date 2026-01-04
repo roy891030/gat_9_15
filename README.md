@@ -65,6 +65,18 @@ gat_9_15/
 
 > 需要快速檢視「功能 → 指令 → 主要參數/輸出」的對照表，可參考 `docs/FUNCTIONAL_COMMAND_MAP.md`。
 
+### 🧭 先同步最新版以避免衝突
+- 若本地分支尚未設定遠端追蹤，先建立連線並綁定上游：
+  ```bash
+  git remote add origin <repo_url>
+  git fetch origin
+  git branch --set-upstream-to=origin/main work  # 將當前分支綁定到遠端 main
+  ```
+- 每次修改前先拉取最新提交，避免與他人產生衝突：
+  ```bash
+  git pull --rebase
+  ```
+
 ---
 
 ## 🚀 快速開始（推薦流程）
