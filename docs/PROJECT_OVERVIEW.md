@@ -21,6 +21,7 @@
   ```bash
   git pull --rebase
   ```
+- 若同步後出現合併衝突，可依 `docs/CONFLICT_RESOLUTION.md` 的步驟處理並檢查衝突檔案。
 
 ---
 

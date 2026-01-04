@@ -49,6 +49,7 @@ gat_9_15/
 │   ├── RUNPODS_GUIDE.md                # RunPods 使用指南
 │   ├── VENV_SETUP.md                   # 虛擬環境設置
 │   ├── FUNCTIONAL_COMMAND_MAP.md       # 功能、指令與輸出對照
+│   ├── CONFLICT_RESOLUTION.md          # 合併衝突處理指引
 │   └── CHANGES_DMFM_Wei2022.md         # 變更記錄
 │
 ├── 🛠️ 工具 (utils/)
