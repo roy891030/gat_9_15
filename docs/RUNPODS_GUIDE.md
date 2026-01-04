@@ -204,37 +204,15 @@ gat_9_15/
 │   └── train_gat.log
 │
 ├── Artifacts（模型和資料）
-│   ├── gat_artifacts_short/
-│   │   ├── Ft_tensor.pt
-│   │   ├── yt_tensor.pt
-│   │   ├── industry_edge_index.pt
-│   │   ├── universe_edge_index.pt
-│   │   ├── dmfm_wei2022_best.pt
-│   │   └── train_log_wei2022.txt
-│   ├── gat_artifacts_medium/
-│   ├── gat_artifacts_long/
-│   └── gat_artifacts_gat/
+│   ├── artifacts_short|medium|long/  # 依視窗分組
+│   └── experiments/                  # run_core_experiments.sh 產出的指標與圖表
 │
-├── 視覺化圖表
-│   ├── plots_short_attention/
-│   │   ├── factor_attention_top_features.png
-│   │   ├── factor_attention_all_features.png
-│   │   ├── factor_attention_timeseries.png
-│   │   ├── factor_attention_heatmap.png
-│   │   ├── factor_attention_pie.png
-│   │   └── factor_attention_summary.txt
-│   ├── plots_short_contexts/
-│   │   ├── context_distributions.png
-│   │   ├── variance_reduction.png
-│   │   ├── influence_magnitude.png
-│   │   ├── context_pca_projection.png
-│   │   └── context_analysis_summary.txt
-│   ├── plots_medium_attention/
-│   ├── plots_medium_contexts/
-│   ├── plots_long_attention/
-│   └── plots_long_contexts/
+├── 範例輸出（只讀參考）
+│   └── examples/
+│       ├── artifacts/{covid_crash,rate_hike}/
+│       └── plots/short|medium|long|covid_crash|rate_hike/{dmfm,gat}/
 │
-└── 總結報告
+└── 總結報告（若有生成）
     └── RESULTS_SUMMARY.md
 ```
 

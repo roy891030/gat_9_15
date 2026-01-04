@@ -344,38 +344,34 @@ r^t = b^t · f^t + ε
 
 ```
 gat_9_15/
+├── 資料與模型腳本
+│   ├── build_artifacts.py
+│   ├── train_dmfm_wei2022.py
+│   ├── train_gat_fixed.py
+│   ├── train_baselines.py
+│   ├── model_dmfm_wei2022.py
+│   └── evaluate_* / plot_* / visualize_* / analyze_* 系列
 │
-├── 資料預處理
-│   ├── build_artifacts.py          # 建立特徵、標籤、圖結構
-│   ├── unique_2019q3to2025q3.csv   # 原始股票資料
-│   └── GAT0050.csv                 # 0050 ETF 基準
+├── 執行腳本
+│   └── run_core_experiments.sh
 │
-├── 模型定義
-│   ├── train_gat_fixed.py          # 原始版本（GATRegressor + DMFM）
-│   ├── model_dmfm_wei2022.py       # Wei 2022 完整版
-│   └── train_dmfm_wei2022.py       # Wei 2022 訓練腳本
+├── 範例輸出 (examples/)
+│   ├── artifacts/{covid_crash,rate_hike}/
+│   └── plots/
+│       ├── short|medium|long/{dmfm,gat}/
+│       └── covid_crash|rate_hike/{dmfm,gat}/
 │
-├── 評估與視覺化
-│   ├── evaluate_metrics.py         # 評估 IC, ICIR, MSE 等指標
-│   ├── evaluate_portfolio.py       # 投資組合回測
-│   ├── plot_reports.py             # 與 0050 比較圖表
-│   ├── visualize_factor_attention.py  # Factor Attention 分析
-│   └── analyze_contexts.py         # 階層式特徵分析
-│
-├── 自動化腳本
-│   ├── run_experiments.sh          # 原始版本完整流程
-│   └── run_dmfm_wei2022.sh         # Wei 2022 完整流程
-│
-├── 輸出資料
-│   ├── gat_artifacts_*/            # 模型 artifacts
-│   ├── plots_*/                    # 視覺化圖表
-│   └── results_*.txt               # 評估結果
+├── 歸檔腳本 (archived/)
+│   ├── run_dmfm_wei2022.sh
+│   ├── run_experiments.sh
+│   └── run_all_models_parallel.sh
 │
 └── 說明文件
-    ├── README.md                   # 專案總說明
-    ├── README_DMFM_Wei2022.md      # Wei 2022 詳細說明
-    ├── CHANGES_DMFM_Wei2022.md     # 變更清單
-    └── PROJECT_OVERVIEW.md         # 本文件
+    ├── README.md, QUICK_START.md
+    ├── README_DMFM_Wei2022.md
+    ├── CHANGES_DMFM_Wei2022.md
+    ├── RUNPODS_GUIDE.md
+    └── VENV_SETUP.md / HIERARCHICAL_NEUTRALIZATION_EXPLAINED.md
 ```
 
 ---
