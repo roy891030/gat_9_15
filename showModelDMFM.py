@@ -1,9 +1,4 @@
-<<<<<<< HEAD
 # showModelDMFM.py
-
-=======
-# visualize_dmfm.py
->>>>>>> origin/main
 import torch
 from torchviz import make_dot
 from model_dmfm_wei2022 import DMFM_Wei2022
