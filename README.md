@@ -16,17 +16,29 @@ gat_9_15/
 │   ├── build_artifacts.py              # [1] 資料預處理與特徵工程
 │   ├── train_dmfm_wei2022.py           # [2] 訓練 DMFM（推薦）
 │   ├── train_gat_fixed.py              # [3] 訓練簡化版 GAT/DMFM
-│   ├── evaluate_metrics.py             # [4] 評估 IC, ICIR, MSE 等指標
-│   ├── evaluate_portfolio.py           # [5] 投資組合回測
-│   ├── visualize_factor_attention.py   # [6] 視覺化 Factor Attention
-│   ├── analyze_contexts.py             # [7] 分析階層式特徵
-│   └── plot_reports.py                 # [8] 生成完整報告與圖表
+│   ├── train_baselines.py              # [4] 線性/LSTM/XGBoost 對照組
+│   ├── evaluate_metrics.py             # [5] 評估 IC, ICIR, MSE 等指標
+│   ├── evaluate_portfolio.py           # [6] 投資組合回測
+│   ├── visualize_factor_attention.py   # [7] 視覺化 Factor Attention
+│   ├── analyze_contexts.py             # [8] 分析階層式特徵
+│   └── plot_reports.py                 # [9] 生成完整報告與圖表
 │
 ├── 🤖 模型定義
 │   └── model_dmfm_wei2022.py           # DMFM 完整模型（對齊論文）
 │
 ├── 🚀 執行腳本
-│   └── run_all_models.sh               # 一鍵執行所有實驗
+│   └── run_core_experiments.sh         # 一鍵執行核心 DMFM/GAT 實驗
+│
+├── 🧪 範例輸出 (examples/)
+│   ├── artifacts/                      # 範例情境的 meta 與訓練日誌
+│   │   ├── covid_crash/
+│   │   └── rate_hike/
+│   └── plots/                          # 整併的示例視覺化結果
+│       ├── short/{dmfm,gat}/
+│       ├── medium/{dmfm,gat}/
+│       ├── long/{dmfm,gat}/
+│       ├── covid_crash/{dmfm,gat}/
+│       └── rate_hike/{dmfm,gat}/
 │
 ├── 📚 文件 (docs/)
 │   ├── PROJECT_OVERVIEW.md             # 專案總覽
@@ -174,6 +186,54 @@ python plot_reports.py \
 
 ---
 
+## 🔄 Baseline 對照模型（Linear / LSTM / XGBoost）
+
+使用 `train_baselines.py` 可以快速訓練非圖神經網路的對照組，與 DMFM/GAT 做橫向比較。所有模型共用 `build_artifacts.py` 產出的資料。
+
+**1) 線性回歸（Ridge）**
+
+```bash
+python train_baselines.py \
+  --artifact_dir gat_artifacts \
+  --model linear \
+  --train_ratio 0.8
+```
+
+**2) XGBoost**
+
+```bash
+python train_baselines.py \
+  --artifact_dir gat_artifacts \
+  --model xgboost \
+  --n_estimators 300 \
+  --max_depth 6 \
+  --learning_rate 0.05
+```
+
+**3) LSTM（使用 lookback 時序）**
+
+```bash
+python train_baselines.py \
+  --artifact_dir gat_artifacts \
+  --model lstm \
+  --lookback 10 \
+  --epochs 30 \
+  --batch_size 256 \
+  --device cuda
+```
+
+**輸出檔案（存放在 `artifact_dir`）：**
+
+| 模型 | 權重/模型 | Scaler | 指標檔 |
+|------|-----------|--------|--------|
+| linear | `baseline_linear.pkl` | `baseline_linear_scaler.pkl` | `baseline_linear_metrics.json` |
+| xgboost | `baseline_xgboost.json` | `baseline_xgboost_scaler.pkl` | `baseline_xgboost_metrics.json` |
+| lstm | `baseline_lstm.pt` | - | `baseline_lstm_metrics.json` |
+
+每個指標檔包含訓練/測試集的 MSE、IC、ICIR、方向準確率等，方便與 DMFM、GAT 作圖或表格比較。
+
+---
+
 ## 📊 一鍵執行完整實驗
 
 ```bash
@@ -193,17 +253,9 @@ bash run_all_models.sh
 
 **輸出結構：**
 ```
-gat_artifacts_short/          # 短期實驗 artifacts
-gat_artifacts_medium/         # 中期實驗 artifacts
-gat_artifacts_long/           # 長期實驗 artifacts
-gat_artifacts_gat/            # GATRegressor artifacts
-train_short.log               # 訓練日誌
-train_medium.log
-train_long.log
-train_gat.log
-plots_short_attention/        # 視覺化結果
-plots_medium_attention/
-...
+artifacts_short|medium|long/  # 依時間視窗儲存的訓練張量與權重
+experiments/                  # run_core_experiments.sh 產出的指標/圖表
+examples/                     # 已整理好的範例 artifacts 與 plots（只讀示例）
 ```
 
 ---
