@@ -243,20 +243,11 @@ def build_reports(artifact_dir, weights, out_dir,
     if model_type == "dmfm":
         model = DMFM(
             in_dim=Fdim,
-<<<<<<< HEAD
-            hid=hid,
-            heads=heads,
-            tanh_cap=tanh_cap,
-            use_factor_attention=True
-        ).to(device)
-=======
             hidden_dim=hid,  # ← 正確
             heads=heads,
             dropout=0.1,
             use_factor_attention=True
         ).to(device)
-
->>>>>>> origin/main
     else:
         model = GATRegressor(
             in_dim=Fdim,
@@ -290,31 +281,19 @@ def build_reports(artifact_dir, weights, out_dir,
                 continue
             
             x = torch.nan_to_num(x, nan=0.0)
-            
+
             # 前向傳播
             if model_type == "dmfm":
-<<<<<<< HEAD
-                p, _, attn = model(x, edge_industry, edge_universe)
-                if attn is not None:
-                    all_attentions.append(attn[mask].detach().cpu().numpy())
-            else:
-                p = model(x, edge_industry)
-            
-            P = p[mask].detach().cpu().numpy()
-            Y = y[mask].detach().cpu().numpy()
-            
-=======
                 p, attn_weights, contexts = model(x, edge_industry, edge_universe)
                 # attn_weights 是 [N, F] 的張量
                 if attn_weights is not None and all_attentions is not None:
                     all_attentions.append(attn_weights[mask].detach().cpu().numpy())
             else:
                 p = model(x, edge_industry)
-            
+
             P = p[mask].detach().cpu().numpy().flatten()  # ← 加 .flatten()
             Y = y[mask].detach().cpu().numpy().flatten()  # ← 加 .flatten()
-                        
->>>>>>> origin/main
+
             all_predictions.append(P)
             all_labels.append(Y)
             
@@ -419,14 +398,9 @@ def build_reports(artifact_dir, weights, out_dir,
             else:
                 p = model(x, edge_industry)
             
-<<<<<<< HEAD
-            P = p[mask].detach().cpu().numpy()
-            Y = y[mask].detach().cpu().numpy()
-=======
             # ✅ 修正：統一加 flatten()
             P = p[mask].detach().cpu().numpy().flatten()
             Y = y[mask].detach().cpu().numpy().flatten()
->>>>>>> origin/main
             
             # 取前 top_pct
             qh = np.nanquantile(P, 1.0 - float(top_pct))
@@ -434,10 +408,7 @@ def build_reports(artifact_dir, weights, out_dir,
             if sel.sum() == 0:
                 continue
             
-<<<<<<< HEAD
-=======
             # ✅ 修正：Y 已經是 1D，直接用 sel 即可
->>>>>>> origin/main
             long_rets.append(np.nanmean(Y[sel]))
             long_dates.append(dates_all[t])
 

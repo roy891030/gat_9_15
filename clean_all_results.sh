@@ -13,7 +13,7 @@ shopt -s nullglob
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-REMOVE_DIRS=(artifacts_* plots_* experiments)
+REMOVE_DIRS=(artifacts_* gat_artifacts_* plots_* experiments)
 REMOVE_FILES=(train_*.log results_*.txt RESULTS_SUMMARY.md)
 
 for dir in "${REMOVE_DIRS[@]}"; do
