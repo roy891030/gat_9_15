@@ -310,6 +310,13 @@ def build_features_and_label(df: pd.DataFrame, cm: Dict[str,str], horizon: int) 
     df = pd.concat([df, feats], axis=1)
 
     # Label：未來 k 日報酬（保留原始值，不做截面去均值）
+<<<<<<< HEAD
+    fwd = df.groupby(cm["code"])[cm["close"]].shift(-horizon)
+    df["fwd_ret_k"] = (fwd - df[cm["close"]]) / df[cm["close"]]
+    # ⭐ 修改：不做截面去均值，因為 DMFM 模型會在訓練時處理
+    df["yt"] = df["fwd_ret_k"]
+
+=======
     # Label：未來 k 日報酬
     fwd = df.groupby(cm["code"])[cm["close"]].shift(-horizon)
     df["fwd_ret_k"] = (fwd - df[cm["close"]]) / df[cm["close"]]
@@ -317,6 +324,7 @@ def build_features_and_label(df: pd.DataFrame, cm: Dict[str,str], horizon: int) 
     # ✅ 關鍵修正：每日截面去均值（市場中性）
     df["yt"] = df.groupby(cm["date"])["fwd_ret_k"].transform(lambda x: x - x.mean())
     
+>>>>>>> origin/main
     # 特徵清單（存在才保留）
     wanted = [
         "ret_1","px_over_sma_5","px_over_sma_10","px_over_sma_20","std_ret_5","std_ret_10","std_ret_20",
@@ -349,17 +357,29 @@ def to_tensors(df: pd.DataFrame, cm: Dict[str,str], feature_cols: List[str], sta
         A = np.full((T, N), np.nan, dtype=np.float32)
         if not piv.empty:
             A[piv.index.values[:,None], piv.columns.values[None,:]] = piv.values
+<<<<<<< HEAD
+        # ⭐ 修改：不做截面標準化，保留原始特徵值
+        # DMFM 模型會使用 BatchNorm 做標準化
+        Ft[:,:,k] = np.nan_to_num(A, nan=0.0, posinf=0.0, neginf=0.0)
+=======
         
         # ✅ 關鍵修正：每日截面標準化（跨股票）
         A_zscore = xsec_zscore(A)  # 這個函數你已經有了（第 67 行）
         Ft[:,:,k] = np.nan_to_num(A_zscore, nan=0.0, posinf=0.0, neginf=0.0)
+>>>>>>> origin/main
 
     piv_y = df.pivot_table(index="t_idx", columns="s_idx", values="yt", aggfunc="first")
     Y = np.full((T, N), np.nan, dtype=np.float32)
     if not piv_y.empty:
         Y[piv_y.index.values[:,None], piv_y.columns.values[None,:]] = piv_y.values
 
+<<<<<<< HEAD
+    # ⭐ 修改：統一使用 float32，避免訓練時的類型不匹配
     return torch.from_numpy(Ft).to(torch.float32), torch.from_numpy(Y).to(torch.float32), [str(d) for d in dates], list(stocks)
+
+=======
+    return torch.from_numpy(Ft).to(torch.float32), torch.from_numpy(Y).to(torch.float32), [str(d) for d in dates], list(stocks)
+>>>>>>> origin/main
 # ---------------- Graph Construction ----------------
 def build_industry_edges(df, cm, stocks):
     """

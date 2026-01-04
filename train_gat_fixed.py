@@ -227,7 +227,11 @@ def train(args):
         hid=args.hid,
         heads=args.heads,
         dropout=args.dropout,
+<<<<<<< HEAD
+        tanh_cap=args.tanh_cap
+=======
         tanh_cap=1.0
+>>>>>>> origin/main
     ).to(device)
     print("模型架構: GATRegressor (實驗性訓練)")
     
@@ -395,14 +399,24 @@ if __name__ == "__main__":
                     help="輸出 tanh 限制範圍（None 表示不限制）")
     
     # 損失函數
+<<<<<<< HEAD
+    ap.add_argument("--loss", type=str, default="huber",
+=======
     ap.add_argument("--loss", type=str, default="corr_mse_ind",
+>>>>>>> origin/main
                     choices=["mse", "huber", "corr_mse", "corr_mse_ind"],
                     help="損失函數類型")
     ap.add_argument("--huber_delta", type=float, default=0.02,
                     help="Huber loss 的 delta 參數")
+<<<<<<< HEAD
+    ap.add_argument("--alpha_mse", type=float, default=0.03,
+                    help="MSE 錨定項權重")
+    ap.add_argument("--lambda_var", type=float, default=0.1,
+=======
     ap.add_argument("--alpha_mse", type=float, default=0.1,
                     help="MSE 錨定項權重")
     ap.add_argument("--lambda_var", type=float, default=0.2,
+>>>>>>> origin/main
                     help="變異數懲罰/鼓勵項權重")
     ap.add_argument("--lambda_attn", type=float, default=0.05,
                     help="DMFM 注意力估計誤差權重")
