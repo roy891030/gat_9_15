@@ -69,16 +69,28 @@ def load_industry_labels(industry_csv, stocks):
     if not path or not os.path.exists(path):
         return None
     try:
+<<<<<<< HEAD
+        # 代碼強制成字串，避免 1101 → 1101.0
+=======
+>>>>>>> origin/main
         df = pd.read_csv(path, dtype={"證券代碼": str, "證券代碼_純代碼": str})
     except Exception:
         return None
 
+<<<<<<< HEAD
+    # 股票代碼欄
+=======
+>>>>>>> origin/main
     sid_col = None
     for c in ["證券代碼_純代碼", "證券代碼", "sid", "StockID", "stock_id"]:
         if c in df.columns:
             sid_col = c
             break
 
+<<<<<<< HEAD
+    # 產業欄（包含 TEJ）
+=======
+>>>>>>> origin/main
     ind_col = None
     for c in ["TEJ產業_名稱", "TEJ產業_代碼", "TSE產業_名稱", "industry_TSE", "Industry", "industry", "產業"]:
         if c in df.columns:
@@ -97,6 +109,17 @@ def load_industry_labels(industry_csv, stocks):
 def industry_residuals(P, Y, inds):
     """
     對每個產業去均值（產業中性化）
+<<<<<<< HEAD
+    
+    參數：
+        P: 預測值數組
+        Y: 真實值數組
+        inds: 產業標籤數組
+    
+    回傳：
+        (殘差預測, 殘差真實): 去除產業均值後的殘差
+=======
+>>>>>>> origin/main
     """
     df = pd.DataFrame({"p": P, "y": Y, "g": inds})
     grp = df.groupby("g", sort=False, observed=True)
@@ -106,10 +129,24 @@ def industry_residuals(P, Y, inds):
 
 
 def detect_model_type(weights_path, in_dim, device="cpu"):
+<<<<<<< HEAD
+    """
+    自動偵測模型類型（GATRegressor 或 DMFM）
+    
+    原理：檢查權重檔的參數名稱
+    """
+    state_dict = torch.load(weights_path, map_location=device)
+    
+    # DMFM 特有的參數
+    dmfm_keys = ["encoder.0.weight", "gat_universe.lin_src.weight", "factor_attn.weight"]
+    is_dmfm = any(key in state_dict for key in dmfm_keys)
+    
+=======
     """自動偵測模型類型"""
     state_dict = torch.load(weights_path, map_location=device)
     dmfm_keys = ["encoder.0.weight", "gat_universe.lin_src.weight", "factor_attn.weight"]
     is_dmfm = any(key in state_dict for key in dmfm_keys)
+>>>>>>> origin/main
     if is_dmfm:
         print("偵測到 DMFM 模型")
         return "dmfm"
@@ -123,6 +160,23 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
                  device="cpu", inds=None, return_predictions=False):
     """
     評估模型在指定索引上的表現
+<<<<<<< HEAD
+    
+    參數：
+        model: 模型實例
+        Ft: 特徵張量 [T, N, F]
+        yt: 標籤張量 [T, N]
+        edge_industry: 產業圖邊索引
+        edge_universe: 全市場圖邊索引
+        indices: 要評估的時間索引列表
+        device: 計算裝置
+        inds: 產業標籤（用於產業中性 IC）
+        return_predictions: 是否回傳預測值（用於後續分析）
+    
+    回傳：
+        dict: 包含各種評估指標
+=======
+>>>>>>> origin/main
     """
     model.eval()
     preds, truths = [], []
@@ -134,7 +188,11 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
     inds_arr = np.array(inds) if inds is not None else None
 
     for t in indices:
+<<<<<<< HEAD
+        x = Ft[t].to(device).float()  # 轉成 float32
+=======
         x = Ft[t].to(device).float()
+>>>>>>> origin/main
         y = yt[t].to(device)
         mask = torch.isfinite(y)
         if mask.sum() == 0:
@@ -142,8 +200,14 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
 
         x = torch.nan_to_num(x, nan=0.0)
         
+<<<<<<< HEAD
+        # 根據模型類型選擇前向傳播方式
+        if isinstance(model, DMFM):
+            p, factor_estimate, attn_weights = model(x, edge_industry.to(device), edge_universe.to(device))
+=======
         if isinstance(model, DMFM):
             p, attn_weights, contexts = model(x, edge_industry.to(device), edge_universe.to(device))
+>>>>>>> origin/main
             if attn_weights is not None:
                 all_attentions.append(attn_weights[mask].detach().cpu().numpy())
         else:
@@ -152,16 +216,25 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
         p = p[mask]
         yy = y[mask]
 
+<<<<<<< HEAD
+        P = p.detach().cpu().numpy()
+        Y = yy.detach().cpu().numpy()
+=======
         # === 關鍵修正：強制壓成 1D array，避免 np.corrcoef 維度不匹配 ===
         P = p.detach().cpu().numpy().flatten()
         Y = yy.detach().cpu().numpy().flatten()
 
+>>>>>>> origin/main
         preds.append(P)
         truths.append(Y)
 
         # 每日 IC
         c = safe_corr(P, Y)
+<<<<<<< HEAD
+        if c == c:  # 檢查非 NaN
+=======
         if c == c:
+>>>>>>> origin/main
             daily_ic.append(c)
         
         # 方向準確率
@@ -191,12 +264,23 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
         P_all = np.concatenate(preds)
         Y_all = np.concatenate(truths)
         
+<<<<<<< HEAD
+        # MSE/RMSE/MAE
+=======
+>>>>>>> origin/main
         mse = float(((P_all - Y_all) ** 2).mean())
         rmse = float(np.sqrt(mse))
         mae = float(np.abs(P_all - Y_all).mean())
         
+<<<<<<< HEAD
+        # IC
         ic = safe_corr(P_all, Y_all)
         
+        # ICIR（IC 的資訊比率 = 平均 IC / IC 標準差）
+=======
+        ic = safe_corr(P_all, Y_all)
+        
+>>>>>>> origin/main
         icir = np.nan
         if daily_ic and len(daily_ic) > 1:
             ic_mean = np.mean(daily_ic)
@@ -213,11 +297,19 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
             "n": int(Y_all.size)
         })
 
+<<<<<<< HEAD
+        # 產業中性指標
+=======
+>>>>>>> origin/main
         if inds_arr is not None and len(resP_all) > 0:
             Pn_all = np.concatenate(resP_all)
             Yn_all = np.concatenate(resY_all)
             ic_ind = safe_corr(Pn_all, Yn_all)
             
+<<<<<<< HEAD
+            # 產業中性 ICIR
+=======
+>>>>>>> origin/main
             icir_ind = np.nan
             if daily_ic_ind and len(daily_ic_ind) > 1:
                 ic_ind_mean = np.mean(daily_ic_ind)
@@ -242,6 +334,15 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
 
 
 def eval_naive_zero(yt, indices):
+<<<<<<< HEAD
+    """
+    評估天真基準（預測為 0）
+    
+    回傳：
+        dict: 包含 MSE/RMSE/MAE
+    """
+=======
+>>>>>>> origin/main
     Ys = []
     for t in indices:
         y = yt[t]
@@ -256,6 +357,10 @@ def eval_naive_zero(yt, indices):
 
 
 def print_metrics(name, metrics, has_industry=False):
+<<<<<<< HEAD
+    """格式化輸出評估指標"""
+=======
+>>>>>>> origin/main
     print(f"\n{'='*60}")
     print(f"{name} 指標")
     print(f"{'='*60}")
@@ -282,6 +387,22 @@ def print_metrics(name, metrics, has_industry=False):
 
 def main():
     ap = argparse.ArgumentParser(description="評估 GAT/DMFM 模型的預測指標")
+<<<<<<< HEAD
+    ap.add_argument("--artifact_dir", type=str, default="./gat_artifacts_out_plus",
+                    help="Artifacts 資料夾路徑")
+    ap.add_argument("--weights", type=str, default="./gat_artifacts_out_plus/gat_regressor.pt",
+                    help="模型權重檔路徑")
+    ap.add_argument("--device", type=str, default="cuda",
+                    help="計算裝置: cpu, cuda, mps, 或 auto")
+    ap.add_argument("--tanh_cap", type=float, default=0.2,
+                    help="輸出 tanh 限制範圍（需與訓練時一致）")
+    ap.add_argument("--industry_csv", type=str, default=None,
+                    help="產業對照表 CSV 檔案")
+    ap.add_argument("--hid", type=int, default=64,
+                    help="隱藏層維度（需與訓練時一致）")
+    ap.add_argument("--heads", type=int, default=2,
+                    help="GAT 注意力頭數（需與訓練時一致）")
+=======
     ap.add_argument("--artifact_dir", type=str, default="./gat_artifacts_out_plus")
     ap.add_argument("--weights", type=str, default="./gat_artifacts_out_plus/gat_regressor.pt")
     ap.add_argument("--device", type=str, default="cuda")
@@ -289,6 +410,7 @@ def main():
     ap.add_argument("--industry_csv", type=str, default=None)
     ap.add_argument("--hid", type=int, default=64)
     ap.add_argument("--heads", type=int, default=2)
+>>>>>>> origin/main
     args = ap.parse_args()
 
     device = pick_device(args.device)
@@ -298,6 +420,10 @@ def main():
     print("=" * 60)
     print(f"使用裝置: {device}")
 
+<<<<<<< HEAD
+    # 載入 artifacts（包含兩種圖）
+=======
+>>>>>>> origin/main
     Ft, yt, edge_industry, edge_universe, meta = load_artifacts(args.artifact_dir)
     Ft = Ft.to(device).float()
     yt = yt.to(device)
@@ -307,6 +433,18 @@ def main():
     T, N, Fdim = Ft.shape
     train_idx, test_idx = time_split_indices(meta["dates"], 0.8)
 
+<<<<<<< HEAD
+    # 自動偵測模型類型
+    model_type = detect_model_type(args.weights, Fdim, device=device)
+    
+    # 載入模型
+    if model_type == "dmfm":
+        model = DMFM(
+            in_dim=Fdim, 
+            hid=args.hid, 
+            heads=args.heads,
+            tanh_cap=args.tanh_cap,
+=======
     model_type = detect_model_type(args.weights, Fdim, device=device)
     
     if model_type == "dmfm":
@@ -314,36 +452,63 @@ def main():
             in_dim=Fdim,
             hidden_dim=args.hid,
             heads=args.heads,
+>>>>>>> origin/main
             use_factor_attention=True
         ).to(device)
     else:
         model = GATRegressor(
+<<<<<<< HEAD
+            in_dim=Fdim, 
+=======
             in_dim=Fdim,
             hid=args.hid,          # ← 新增這行
             heads=args.heads,      # ← 新增這行
+>>>>>>> origin/main
             tanh_cap=args.tanh_cap
         ).to(device)
     
     model.load_state_dict(torch.load(args.weights, map_location=device))
 
+<<<<<<< HEAD
+    # 載入產業標籤
     stocks = meta.get("stocks", [str(i) for i in range(N)])
     inds = load_industry_labels(args.industry_csv, stocks)
+    
+=======
+    stocks = meta.get("stocks", [str(i) for i in range(N)])
+    inds = load_industry_labels(args.industry_csv, stocks)
+>>>>>>> origin/main
     has_industry = inds is not None
 
     print(f"資料: T={T}, N={N}, F={Fdim}")
     print(f"產業標籤: {'有 ✓' if has_industry else '無'}")
     print(f"訓練集: {len(train_idx)} 天 | 測試集: {len(test_idx)} 天")
 
+<<<<<<< HEAD
+    # 評估訓練集
+=======
+>>>>>>> origin/main
     print("\n評估訓練集...")
     tr = eval_indices(model, Ft, yt, edge_industry, edge_universe, train_idx, 
                       device=device, inds=inds)
 
+<<<<<<< HEAD
+    # 評估測試集
+=======
+>>>>>>> origin/main
     print("評估測試集...")
     te = eval_indices(model, Ft, yt, edge_industry, edge_universe, test_idx, 
                       device=device, inds=inds, return_predictions=True)
 
+<<<<<<< HEAD
+    # 天真基準
     bz = eval_naive_zero(yt, test_idx)
 
+    # 輸出結果
+=======
+    bz = eval_naive_zero(yt, test_idx)
+
+>>>>>>> origin/main
     print_metrics("訓練集", tr, has_industry=has_industry)
     print_metrics("測試集", te, has_industry=has_industry)
     
@@ -354,16 +519,28 @@ def main():
     print(f"  RMSE : {bz['RMSE']:.6f}")
     print(f"  MAE  : {bz['MAE']:.6f}")
 
+<<<<<<< HEAD
+    # MSE 改善
+=======
+>>>>>>> origin/main
     if np.isfinite(bz["MSE"]) and np.isfinite(te["MSE"]):
         impr = 100.0 * (1.0 - te["MSE"] / bz["MSE"])
         print(f"\n{'='*60}")
         print(f"相對天真基準的 MSE 改善：{impr:.2f}%")
         print(f"{'='*60}")
     
+<<<<<<< HEAD
+    # 模型效果總結
+=======
+>>>>>>> origin/main
     print(f"\n{'='*60}")
     print("模型效果總結")
     print(f"{'='*60}")
     
+<<<<<<< HEAD
+    # IC 評級
+=======
+>>>>>>> origin/main
     test_ic = te['IC']
     if np.isfinite(test_ic):
         if test_ic > 0.10:
@@ -378,6 +555,10 @@ def main():
             grade = "不佳"
         print(f"測試集 IC: {test_ic:.4f} ({grade})")
     
+<<<<<<< HEAD
+    # ICIR 評級
+=======
+>>>>>>> origin/main
     test_icir = te['ICIR']
     if np.isfinite(test_icir):
         if test_icir > 2.0:
