@@ -13,9 +13,9 @@ bash clean_all_results.sh
 
 **清理內容：**
 - ✓ 停止所有正在運行的訓練進程
-- ✓ 刪除所有 `gat_artifacts_*` 目錄
-- ✓ 刪除所有 `results_*.txt` 檔案
-- ✓ 刪除所有 `plots_*` 目錄
+- ✓ 刪除所有 `artifacts_*` 目錄與模型
+- ✓ 刪除 `experiments/`、`results_*.txt`、`RESULTS_SUMMARY.md`
+- ✓ 刪除所有 `plots_*` 目錄（若有額外生成）
 - ✓ 刪除所有 `train*.log` 檔案
 
 ---
@@ -113,8 +113,8 @@ grep "訓練完成\|Early stopping\|完成" train_*.log
 
 ```bash
 # 查看是否生成模型檔案
-ls -lh gat_artifacts_*/dmfm_wei2022_best.pt
-ls -lh gat_artifacts_*/gat_regressor.pt
+ls -lh artifacts_*/dmfm_wei2022_best.pt
+ls -lh artifacts_*/gat_regressor.pt
 ```
 
 ---
@@ -137,10 +137,10 @@ bash post_process_all.sh
 
 | 模型 | 資料期間 | Artifacts 目錄 | 訓練日誌 | 預期時間 |
 |------|---------|---------------|---------|---------|
-| DMFM (短期) | 2019-2020 | gat_artifacts_short | train_short.log | 30-40 min |
-| DMFM (中期) | 2019-2022 | gat_artifacts_medium | train_medium.log | 50-60 min |
-| DMFM (長期) | 2019-2025 | gat_artifacts_long | train_long.log | 60-80 min |
-| GATRegressor | 2019-2022 | gat_artifacts_gat | train_gat.log | 20-30 min |
+| DMFM (短期) | 2019-2020 | artifacts_short | train_short.log | 30-40 min |
+| DMFM (中期) | 2019-2022 | artifacts_medium | train_medium.log | 50-60 min |
+| DMFM (長期) | 2019-2025 | artifacts_long | train_long.log | 60-80 min |
+| GATRegressor | 2019-2022 | artifacts_short/medium/long | train_gat.log | 20-30 min |
 
 **總計：** 約 2.5-3.5 小時（串行），1.5-2.5 小時（並行）
 
@@ -162,26 +162,26 @@ grep "Early stopping" train_*.log
 
 ```bash
 # 查看短期 DMFM 的 Factor Attention
-cat plots_short_attention/factor_attention_summary.txt
+cat experiments/exp_short/attention/factor_attention_summary.txt
 
 # 查看中期 DMFM
-cat plots_medium_attention/factor_attention_summary.txt
+cat experiments/exp_medium/attention/factor_attention_summary.txt
 
 # 查看長期 DMFM
-cat plots_long_attention/factor_attention_summary.txt
+cat experiments/exp_long/attention/factor_attention_summary.txt
 ```
 
 ### 階層式特徵分析
 
 ```bash
 # 查看短期 DMFM 的階層式特徵效果
-cat plots_short_contexts/context_analysis_summary.txt
+cat experiments/exp_short/contexts/context_analysis_summary.txt
 
 # 查看中期 DMFM
-cat plots_medium_contexts/context_analysis_summary.txt
+cat experiments/exp_medium/contexts/context_analysis_summary.txt
 
 # 查看長期 DMFM
-cat plots_long_contexts/context_analysis_summary.txt
+cat experiments/exp_long/contexts/context_analysis_summary.txt
 ```
 
 ### 總結報告
@@ -204,37 +204,15 @@ gat_9_15/
 │   └── train_gat.log
 │
 ├── Artifacts（模型和資料）
-│   ├── gat_artifacts_short/
-│   │   ├── Ft_tensor.pt
-│   │   ├── yt_tensor.pt
-│   │   ├── industry_edge_index.pt
-│   │   ├── universe_edge_index.pt
-│   │   ├── dmfm_wei2022_best.pt
-│   │   └── train_log_wei2022.txt
-│   ├── gat_artifacts_medium/
-│   ├── gat_artifacts_long/
-│   └── gat_artifacts_gat/
+│   ├── artifacts_short|medium|long/  # 依視窗分組
+│   └── experiments/                  # run_core_experiments.sh 產出的指標與圖表
 │
-├── 視覺化圖表
-│   ├── plots_short_attention/
-│   │   ├── factor_attention_top_features.png
-│   │   ├── factor_attention_all_features.png
-│   │   ├── factor_attention_timeseries.png
-│   │   ├── factor_attention_heatmap.png
-│   │   ├── factor_attention_pie.png
-│   │   └── factor_attention_summary.txt
-│   ├── plots_short_contexts/
-│   │   ├── context_distributions.png
-│   │   ├── variance_reduction.png
-│   │   ├── influence_magnitude.png
-│   │   ├── context_pca_projection.png
-│   │   └── context_analysis_summary.txt
-│   ├── plots_medium_attention/
-│   ├── plots_medium_contexts/
-│   ├── plots_long_attention/
-│   └── plots_long_contexts/
+├── 範例輸出（只讀參考）
+│   └── examples/
+│       ├── artifacts/{covid_crash,rate_hike}/
+│       └── plots/short|medium|long|covid_crash|rate_hike/{dmfm,gat}/
 │
-└── 總結報告
+└── 總結報告（若有生成）
     └── RESULTS_SUMMARY.md
 ```
 
@@ -255,7 +233,7 @@ tail -f train_short.log
 
 # 如果真的中斷，重新啟動特定模型：
 nohup python train_dmfm_wei2022.py \
-  --artifact_dir gat_artifacts_short \
+  --artifact_dir artifacts_short \
   --epochs 200 \
   --lr 1e-3 \
   --device cuda \
@@ -288,25 +266,25 @@ python train_dmfm_wei2022.py \
 ```bash
 # 只訓練長期 DMFM
 python build_artifacts.py \
-  --artifact_dir gat_artifacts_long \
+  --artifact_dir artifacts_long \
   --start_date 2019-09-16 \
   --end_date 2025-09-12 \
   --horizon 5
 
 nohup python train_dmfm_wei2022.py \
-  --artifact_dir gat_artifacts_long \
+  --artifact_dir artifacts_long \
   --epochs 200 \
   --device cuda \
   > train_long.log 2>&1 &
 
 # 訓練完成後
 python visualize_factor_attention.py \
-  --artifact_dir gat_artifacts_long \
-  --output_dir plots_long_attention
+  --artifact_dir artifacts_long \
+  --output_dir experiments/exp_long/attention
 
 python analyze_contexts.py \
   --artifact_dir gat_artifacts_long \
-  --output_dir plots_long_contexts
+  --output_dir experiments/exp_long/contexts
 ```
 
 ---
@@ -318,9 +296,9 @@ python analyze_contexts.py \
 ```bash
 # 打包所有結果
 tar -czf results.tar.gz \
-  plots_*/ \
-  gat_artifacts_*/dmfm_wei2022_best.pt \
-  gat_artifacts_*/train_log_wei2022.txt \
+  experiments/ \
+  artifacts_*/dmfm_wei2022_best.pt \
+  artifacts_*/gat_regressor.pt \
   train_*.log \
   RESULTS_SUMMARY.md
 
@@ -338,14 +316,14 @@ tar -czf results.tar.gz \
 cat RESULTS_SUMMARY.md
 
 # 2. 比較 Factor Attention（哪些特徵重要）
-diff plots_short_attention/factor_attention_summary.txt \
-     plots_long_attention/factor_attention_summary.txt
+diff experiments/exp_short/attention/factor_attention_summary.txt \
+     experiments/exp_long/attention/factor_attention_summary.txt
 
 # 3. 比較訓練日誌（收斂速度、最佳 IC）
 grep "Best\|best" train_*.log
 
 # 4. 比較階層式特徵效果（變異數降低）
-grep "變異數降低\|Variance reduction" plots_*/context_analysis_summary.txt
+grep "變異數降低\|Variance reduction" experiments/exp_*/contexts/context_analysis_summary.txt
 ```
 
 ---
@@ -370,11 +348,11 @@ bash post_process_all.sh
 
 # 5. 查看結果
 cat RESULTS_SUMMARY.md
-cat plots_*_attention/factor_attention_summary.txt
-cat plots_*_contexts/context_analysis_summary.txt
+cat experiments/exp_*/attention/factor_attention_summary.txt
+cat experiments/exp_*/contexts/context_analysis_summary.txt
 
 # 6. 下載結果（可選）
-tar -czf results.tar.gz plots_*/ *.md *.log
+tar -czf results.tar.gz experiments/ artifacts_*/ *.md *.log
 ```
 
 ---
