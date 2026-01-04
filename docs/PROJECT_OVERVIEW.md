@@ -344,6 +344,7 @@ r^t = b^t · f^t + ε
 
 ```
 gat_9_15/
+<<<<<<< HEAD
 │
 ├── 資料預處理
 │   ├── build_artifacts.py          # 建立特徵、標籤、圖結構
@@ -376,6 +377,36 @@ gat_9_15/
     ├── README_DMFM_Wei2022.md      # Wei 2022 詳細說明
     ├── CHANGES_DMFM_Wei2022.md     # 變更清單
     └── PROJECT_OVERVIEW.md         # 本文件
+=======
+├── 資料與模型腳本
+│   ├── build_artifacts.py
+│   ├── train_dmfm_wei2022.py
+│   ├── train_gat_fixed.py
+│   ├── train_baselines.py
+│   ├── model_dmfm_wei2022.py
+│   └── evaluate_* / plot_* / visualize_* / analyze_* 系列
+│
+├── 執行腳本
+│   └── run_core_experiments.sh
+│
+├── 範例輸出 (examples/)
+│   ├── artifacts/{covid_crash,rate_hike}/
+│   └── plots/
+│       ├── short|medium|long/{dmfm,gat}/
+│       └── covid_crash|rate_hike/{dmfm,gat}/
+│
+├── 歸檔腳本 (archived/)
+│   ├── run_dmfm_wei2022.sh
+│   ├── run_experiments.sh
+│   └── run_all_models_parallel.sh
+│
+└── 說明文件
+    ├── README.md, QUICK_START.md
+    ├── README_DMFM_Wei2022.md
+    ├── CHANGES_DMFM_Wei2022.md
+    ├── RUNPODS_GUIDE.md
+    └── VENV_SETUP.md / HIERARCHICAL_NEUTRALIZATION_EXPLAINED.md
+>>>>>>> origin/main
 ```
 
 ---

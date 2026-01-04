@@ -204,6 +204,7 @@ gat_9_15/
 │   └── train_gat.log
 │
 ├── Artifacts（模型和資料）
+<<<<<<< HEAD
 │   ├── gat_artifacts_short/
 │   │   ├── Ft_tensor.pt
 │   │   ├── yt_tensor.pt
@@ -235,6 +236,17 @@ gat_9_15/
 │   └── plots_long_contexts/
 │
 └── 總結報告
+=======
+│   ├── artifacts_short|medium|long/  # 依視窗分組
+│   └── experiments/                  # run_core_experiments.sh 產出的指標與圖表
+│
+├── 範例輸出（只讀參考）
+│   └── examples/
+│       ├── artifacts/{covid_crash,rate_hike}/
+│       └── plots/short|medium|long|covid_crash|rate_hike/{dmfm,gat}/
+│
+└── 總結報告（若有生成）
+>>>>>>> origin/main
     └── RESULTS_SUMMARY.md
 ```
 

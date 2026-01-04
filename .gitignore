@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Python cache files
 __pycache__/
 *.pyc
@@ -18,3 +19,25 @@ venv/
 .DS_Store
 gat_artifacts_out_plus/
 unique_2019q3to2025q3.csv
+=======
+# 排除模型權重檔
+*.pt
+*.pth
+*.ckpt
+
+# 排除資料檔
+*.csv
+*.parquet
+
+# 排除 artifacts 資料夾
+gat_artifacts_*/
+experiments/
+
+# 排除 Python cache
+__pycache__/
+*.pyc
+*.pyo
+# 虛擬環境
+.venv/
+venv/
+>>>>>>> origin/main

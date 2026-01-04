@@ -63,14 +63,23 @@ class DMFM_Wei2022(nn.Module):
     """
 
     def __init__(self,
+<<<<<<< HEAD
                  num_features: int,
+=======
+                 num_features: int = None,      # 舊命名，保持相容
+                 in_dim: int = None,            # 新增：讓 evaluate_metrics.py 能用
+>>>>>>> origin/main
                  hidden_dim: int = 64,
                  heads: int = 2,
                  dropout: float = 0.0,
                  use_factor_attention: bool = True):
         """
         參數：
+<<<<<<< HEAD
             num_features: 原始特徵數量 F
+=======
+            num_features 或 in_dim: 原始特徵數量 F（兩者任一即可）
+>>>>>>> origin/main
             hidden_dim: 隱藏層維度
             heads: GAT 注意力頭數
             dropout: Dropout 比例
@@ -78,18 +87,37 @@ class DMFM_Wei2022(nn.Module):
         """
         super().__init__()
 
+<<<<<<< HEAD
         self.num_features = num_features
+=======
+        # 優先使用 in_dim，否則用 num_features
+        if in_dim is not None:
+            self.num_features = in_dim
+        elif num_features is not None:
+            self.num_features = num_features
+        else:
+            raise ValueError("Must provide either num_features or in_dim")
+
+>>>>>>> origin/main
         self.hidden_dim = hidden_dim
         self.heads = heads
         self.use_factor_attention = use_factor_attention
 
         # ==================== 1. Stock Context Encoder ====================
         # BatchNorm (相當於截面 z-score normalization)
+<<<<<<< HEAD
         self.batch_norm = nn.BatchNorm1d(num_features)
 
         # MLP Encoder: F -> hidden_dim
         self.encoder = nn.Sequential(
             nn.Linear(num_features, hidden_dim * 2),
+=======
+        self.batch_norm = nn.BatchNorm1d(self.num_features)
+
+        # MLP Encoder: F -> hidden_dim
+        self.encoder = nn.Sequential(
+            nn.Linear(self.num_features, hidden_dim * 2),
+>>>>>>> origin/main
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim * 2, hidden_dim),
@@ -132,7 +160,11 @@ class DMFM_Wei2022(nn.Module):
         # ==================== 5. Factor Attention Module ====================
         # 用於解釋深度因子來自哪些原始特徵
         if use_factor_attention:
+<<<<<<< HEAD
             self.factor_attention = nn.Linear(num_features, num_features)
+=======
+            self.factor_attention = nn.Linear(self.num_features, self.num_features)
+>>>>>>> origin/main
 
     def forward(self, x, industry_edge_index, universe_edge_index):
         """
@@ -199,6 +231,7 @@ class DMFM_Wei2022(nn.Module):
 
         return deep_factor, attn_weights, contexts
 
+<<<<<<< HEAD
     def interpret_factor(self, x, attn_weights):
         """
         解釋深度因子：f̂^t = F^T · ā^t
@@ -236,6 +269,27 @@ class DMFM_Wei2022(nn.Module):
         return importance
 
 
+=======
+    # 其餘方法（interpret_factor, get_attention_importance）保持原樣不變
+    def interpret_factor(self, x, attn_weights):
+        if attn_weights is None:
+            return None
+        f_hat = (x * attn_weights).sum(dim=-1, keepdim=True)
+        return f_hat
+
+    def get_attention_importance(self, x, attn_weights):
+        if attn_weights is None:
+            return None
+        importance = attn_weights.mean(dim=0)
+        return importance
+
+
+# DMFM_Lite 和 GATRegressor 保持你原本的版本不動（因為沒問題）
+# ...（後面直接貼你原本的 DMFM_Lite 和 GATRegressor）
+
+# __main__ 測試區也保留你原本詳細的版本
+
+>>>>>>> origin/main
 class DMFM_Lite(nn.Module):
     """
     DMFM 的輕量版（用於記憶體受限的環境）
@@ -300,12 +354,34 @@ class GATRegressor(nn.Module):
     簡化版 GAT 模型（向後相容）
     - 兩層 GAT + 線性輸出
     - 僅使用單一圖結構（產業圖）
+<<<<<<< HEAD
     """
     def __init__(self, in_dim, hid=64, heads=2, dropout=0.1, tanh_cap=None):
         super().__init__()
         self.gat1 = GATConv(in_dim, hid, heads=heads, dropout=dropout)
         self.gat2 = GATConv(hid*heads, hid, heads=1, dropout=dropout)
         self.lin = nn.Linear(hid, 1)
+=======
+    
+    ⭐ 修正版（2025-12-15）：
+    - 添加 LayerNorm 穩定訓練
+    - 輸出層小初始化防止梯度爆炸
+    - tanh_cap 預設 1.0（溫和限制）
+    """
+    def __init__(self, in_dim, hid=64, heads=2, dropout=0.1, tanh_cap=2.0):  # ← 預設改為 1.0
+        super().__init__()
+        self.gat1 = GATConv(in_dim, hid, heads=heads, dropout=dropout)
+        self.gat2 = GATConv(hid*heads, hid, heads=1, dropout=dropout)
+        
+        # ⭐ 新增：LayerNorm 穩定訓練
+        self.norm = nn.LayerNorm(hid)
+        
+        # ⭐ 修改：輸出層小初始化
+        self.lin = nn.Linear(hid, 1)
+        nn.init.xavier_uniform_(self.lin.weight, gain=0.01)  # 小初始化
+        nn.init.zeros_(self.lin.bias)
+        
+>>>>>>> origin/main
         self.tanh_cap = tanh_cap
 
     def forward(self, x, edge_index, edge_universe=None):
@@ -319,9 +395,22 @@ class GATRegressor(nn.Module):
         x = F.elu(x)
         x = self.gat2(x, edge_index)
         x = F.elu(x)
+<<<<<<< HEAD
         out = self.lin(x).squeeze(-1)
         if self.tanh_cap is not None:
             out = self.tanh_cap * torch.tanh(out)
+=======
+        
+        # ⭐ 新增：標準化
+        x = self.norm(x)
+        
+        out = self.lin(x).squeeze(-1)
+        
+        # ⭐ 溫和限制（1.0 可覆蓋 ±1.0 範圍）
+        if self.tanh_cap is not None:
+            out = self.tanh_cap * torch.tanh(out)
+        
+>>>>>>> origin/main
         return out
 
 
