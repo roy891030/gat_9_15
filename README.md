@@ -27,7 +27,9 @@ gat_9_15/
 │   └── model_dmfm_wei2022.py           # DMFM 完整模型（對齊論文）
 │
 ├── 🚀 執行腳本
-│   └── run_core_experiments.sh         # 一鍵執行核心 DMFM/GAT 實驗
+│   ├── run_core_experiments.sh         # 一鍵執行核心 DMFM/GAT 實驗
+│   ├── run_all_models.sh               # run_core_experiments 的包裝器
+│   └── run_all_models_parallel.sh      # 並行版包裝（呼叫 archived 腳本）
 │
 ├── 🧪 範例輸出 (examples/)
 │   ├── artifacts/                      # 範例情境的 meta 與訓練日誌

@@ -32,7 +32,9 @@ gat_9_15/
 │   └── model_dmfm_wei2022.py
 │
 ├── 🚀 執行腳本
-│   └── run_core_experiments.sh
+│   ├── run_core_experiments.sh
+│   ├── run_all_models.sh               # 包裝 run_core_experiments
+│   └── run_all_models_parallel.sh      # 包裝 archived 並行腳本
 │
 ├── 🧪 範例輸出 (examples/)
 │   ├── artifacts/

@@ -353,7 +353,9 @@ gat_9_15/
 │   └── evaluate_* / plot_* / visualize_* / analyze_* 系列
 │
 ├── 執行腳本
-│   └── run_core_experiments.sh
+│   ├── run_core_experiments.sh
+│   ├── run_all_models.sh               # 包裝 core 實驗
+│   └── run_all_models_parallel.sh      # 包裝 archived 並行腳本
 │
 ├── 範例輸出 (examples/)
 │   ├── artifacts/{covid_crash,rate_hike}/
@@ -364,7 +366,7 @@ gat_9_15/
 ├── 歸檔腳本 (archived/)
 │   ├── run_dmfm_wei2022.sh
 │   ├── run_experiments.sh
-│   └── run_all_models_parallel.sh
+│   └── run_all_models_parallel.sh      # 原始並行腳本（被 wrapper 呼叫）
 │
 └── 說明文件
     ├── README.md, QUICK_START.md
