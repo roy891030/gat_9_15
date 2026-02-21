@@ -26,9 +26,12 @@ train_*.log
 unique_2019q3to2025q3.csv
 
 # Generated experiment outputs
+artifacts/
 artifacts_*/
 gat_artifacts_*/
 experiments/
+runs/
+runs*/
 plots_*/
 results_*.txt
 RESULTS_SUMMARY.md

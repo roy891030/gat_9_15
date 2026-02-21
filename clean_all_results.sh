@@ -2,18 +2,17 @@
 set -euo pipefail
 
 # 清理常見的訓練產物，避免舊資料干擾新實驗。
-# - artifacts_*  : 產生的特徵、模型與 meta
-# - experiments/ : 評估與報告輸出
-# - plots_*      : 即時視覺化輸出
-# - train_*.log  : 訓練日誌
-# - RESULTS_SUMMARY.md / results_*.txt : 彙總檔
+# - artifacts/   : 新版 pipeline 輸入 artifacts
+# - runs/        : 新版 pipeline 輸出（metrics/backtest/plots/logs）
+# - artifacts_* / gat_artifacts_* / experiments / plots_* : 舊版輸出
+# - train_*.log, results_*.txt, RESULTS_SUMMARY.md : 舊版文字結果
 
 shopt -s nullglob
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-REMOVE_DIRS=(artifacts_* gat_artifacts_* plots_* experiments)
+REMOVE_DIRS=(artifacts runs artifacts_* gat_artifacts_* plots_* experiments)
 REMOVE_FILES=(train_*.log results_*.txt RESULTS_SUMMARY.md)
 
 for dir in "${REMOVE_DIRS[@]}"; do

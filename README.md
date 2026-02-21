@@ -8,6 +8,18 @@
 
 ---
 
+## 🔄 統一執行入口（新版）
+
+目前建議以 `run_pipeline.py` 為主要流程入口，支援：
+- 單獨跑 `baseline / gat / dmfm`
+- 跑 `short / medium / long` 任意時間窗
+- `smoke` 與 `full` 兩種模式
+- 只做後處理（`--skip_build --skip_train`）
+
+完整指令請看：`docs/UNIFIED_WORKFLOW.md`
+
+---
+
 ## 📁 專案結構（已整理）
 
 ```
