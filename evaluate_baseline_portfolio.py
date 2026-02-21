@@ -42,8 +42,26 @@ class EvalMetrics:
 def parse_dates_list(str_dates: List[str]) -> List[pd.Timestamp]:
     return pd.to_datetime(pd.Series(str_dates), errors="coerce").tolist()
 
+def parse_datetime_series(s: pd.Series) -> pd.Series:
+    s = s.astype(str).str.strip()
+    dt = pd.to_datetime(s, format="%Y/%m/%d", errors="coerce")
+    miss = dt.isna()
+    if miss.any():
+        dt2 = pd.to_datetime(s[miss], format="%Y-%m-%d", errors="coerce")
+        dt.loc[miss] = dt2
+        miss = dt.isna()
+    if miss.any():
+        dt2 = pd.to_datetime(s[miss], errors="coerce")
+        dt.loc[miss] = dt2
+    return dt
+
 
 def parse_benchmark(benchmark_csv: str) -> pd.DataFrame:
+    with open(benchmark_csv, "r", encoding="utf-8", errors="ignore") as f:
+        first_line = f.readline().strip()
+    if "git-lfs.github.com/spec" in first_line:
+        raise ValueError("benchmark_csv is a Git LFS pointer; fetch real data first")
+
     df = pd.read_csv(benchmark_csv)
 
     dcol = None
@@ -54,7 +72,7 @@ def parse_benchmark(benchmark_csv: str) -> pd.DataFrame:
     if dcol is None:
         dcol = df.columns[0]
 
-    df[dcol] = pd.to_datetime(df[dcol], errors="coerce")
+    df[dcol] = parse_datetime_series(df[dcol])
     df = df.dropna(subset=[dcol]).sort_values(dcol).set_index(dcol)
 
     for rc in ["報酬率％", "Return", "ret", "pct_change", "RET", "ret1"]:
@@ -365,23 +383,45 @@ def evaluate_and_plot(
     strat_cum = (1.0 + strat.fillna(0.0)).cumprod() - 1.0
 
     bmk_cum = None
+    strat_cmp = None
+    bmk_on = None
     if benchmark_csv and os.path.exists(benchmark_csv):
         try:
             bmk = parse_benchmark(benchmark_csv)
             fwd = compound_forward(bmk["ret"], steps=horizon_k)
             bmk_on = fwd.reindex(strat.index)
-            bmk_cum = (1.0 + bmk_on.fillna(0.0)).cumprod() - 1.0
+            mask = strat.notna() & bmk_on.notna()
+            if int(mask.sum()) >= 2:
+                strat_cmp = strat[mask]
+                bmk_on = bmk_on[mask]
+                bmk_cum = (1.0 + bmk_on).cumprod() - 1.0
+                print(
+                    f"Benchmark aligned range: {strat_cmp.index.min().date()} ~ {strat_cmp.index.max().date()} "
+                    f"(n={len(strat_cmp)})"
+                )
+            else:
+                print("[warn] benchmark overlap too short; skip benchmark comparison")
         except Exception as e:
             print(f"[warn] benchmark parse failed: {e}")
 
     plt.figure(figsize=(12, 6))
-    plt.plot(
-        strat_cum.index,
-        strat_cum.values * 100,
-        linewidth=2.5,
-        label=f"{model_name} strategy (top {top_pct*100:.0f}%)",
-        color="#2E86AB",
-    )
+    if strat_cmp is not None:
+        strat_plot = (1.0 + strat_cmp).cumprod() - 1.0
+        plt.plot(
+            strat_plot.index,
+            strat_plot.values * 100,
+            linewidth=2.5,
+            label=f"{model_name} strategy (aligned, top {top_pct*100:.0f}%)",
+            color="#2E86AB",
+        )
+    else:
+        plt.plot(
+            strat_cum.index,
+            strat_cum.values * 100,
+            linewidth=2.5,
+            label=f"{model_name} strategy (top {top_pct*100:.0f}%)",
+            color="#2E86AB",
+        )
     if bmk_cum is not None:
         plt.plot(
             bmk_cum.index,
