@@ -96,7 +96,16 @@ bash post_process_all.sh
 - `--windows short,medium,long,all`
 - `--mode smoke|full`
 - `--device auto|cpu|cuda|mps`
+- `--train_ratio`（test 起點比例，預設 `0.8`）
+- `--val_ratio`（train 區段中的 validation 比例，預設 `0.1`）
 - `--skip_build`
 - `--skip_train`
 - `--dry_run`（只印命令，不執行）
 
+## 7) 版本升級提醒
+- 新版 `build_artifacts.py` 會多產生 `yraw_tensor.pt`（原始 forward return）。
+- 回測會優先使用 `yraw_tensor.pt`；若舊 artifacts 沒有此檔，會 fallback 到 `yt_tensor.pt` 並印出 warning。
+- 建議至少重建一次 artifacts：
+```bash
+python3 run_pipeline.py --models all --windows all --mode smoke --rebuild_artifacts
+```

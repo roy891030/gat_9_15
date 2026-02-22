@@ -14,6 +14,8 @@
                           # 特徵張量：時間 × 股票數 × 特徵數
   yt_tensor.pt            # float32 格式，[T, N]
                           # 標籤張量：時間 × 股票數（對應 horizon 報酬率）
+  yraw_tensor.pt          # float32 格式，[T, N]
+                          # 原始 forward-k 報酬（未做每日去均值）
   industry_edge_index.pt  # long 格式，[2, E]
                           # 圖結構的邊索引，表示產業內股票的關聯
   universe_edge_index.pt  # long 格式，[2, E_univ]  <-- 新增
@@ -357,7 +359,19 @@ def to_tensors(df: pd.DataFrame, cm: Dict[str,str], feature_cols: List[str], sta
     if not piv_y.empty:
         Y[piv_y.index.values[:,None], piv_y.columns.values[None,:]] = piv_y.values
 
-    return torch.from_numpy(Ft).to(torch.float32), torch.from_numpy(Y).to(torch.float32), [str(d) for d in dates], list(stocks)
+    # 原始 forward return（未做每日去均值），供回測/基準比較使用
+    piv_yraw = df.pivot_table(index="t_idx", columns="s_idx", values="fwd_ret_k", aggfunc="first")
+    Y_raw = np.full((T, N), np.nan, dtype=np.float32)
+    if not piv_yraw.empty:
+        Y_raw[piv_yraw.index.values[:,None], piv_yraw.columns.values[None,:]] = piv_yraw.values
+
+    return (
+        torch.from_numpy(Ft).to(torch.float32),
+        torch.from_numpy(Y).to(torch.float32),
+        torch.from_numpy(Y_raw).to(torch.float32),
+        [str(d) for d in dates],
+        list(stocks),
+    )
 # ---------------- Graph Construction ----------------
 def build_industry_edges(df, cm, stocks):
     """
@@ -457,7 +471,7 @@ def main():
     df_b, feature_cols = build_features_and_label(df, cm, args.horizon)
     
     # 轉換為張量
-    Ft_t, Y_t, dates, stocks = to_tensors(df_b, cm, feature_cols, args.start_date, args.end_date)
+    Ft_t, Y_t, Y_raw_t, dates, stocks = to_tensors(df_b, cm, feature_cols, args.start_date, args.end_date)
     
     # 建立兩種圖結構
     industry_edge_index = build_industry_edges(df_b, cm, stocks)      # 產業圖
@@ -466,6 +480,7 @@ def main():
     # 儲存所有 artifacts
     torch.save(Ft_t, os.path.join(args.artifact_dir, "Ft_tensor.pt"))
     torch.save(Y_t , os.path.join(args.artifact_dir, "yt_tensor.pt"))
+    torch.save(Y_raw_t, os.path.join(args.artifact_dir, "yraw_tensor.pt"))
     torch.save(industry_edge_index, os.path.join(args.artifact_dir, "industry_edge_index.pt"))
     torch.save(universe_edge_index, os.path.join(args.artifact_dir, "universe_edge_index.pt"))  # 新增
     
@@ -476,6 +491,7 @@ def main():
         "stocks": stocks,
         "horizon": args.horizon, 
         "column_map": cm,
+        "raw_label_col": "fwd_ret_k",
         "num_stocks": len(stocks),                          # 新增：股票數量
         "num_features": len(feature_cols),                  # 新增：特徵數量
         "num_industry_edges": industry_edge_index.shape[1], # 新增：產業圖邊數
@@ -491,6 +507,7 @@ def main():
     print("\n儲存檔案：")
     print(f" ✓ Ft_tensor.pt            : {tuple(Ft_t.shape)}, {Ft_t.dtype}")
     print(f" ✓ yt_tensor.pt            : {tuple(Y_t.shape)}, {Y_t.dtype}")
+    print(f" ✓ yraw_tensor.pt          : {tuple(Y_raw_t.shape)}, {Y_raw_t.dtype}")
     print(f" ✓ industry_edge_index.pt  : {tuple(industry_edge_index.shape)}")
     print(f" ✓ universe_edge_index.pt  : {tuple(universe_edge_index.shape)} (新增)")
     print(f" ✓ meta.pkl                : 包含 {len(meta)} 項 metadata")
@@ -512,11 +529,13 @@ def main():
     universe_mem_mb = universe_edge_index.element_size() * universe_edge_index.nelement() / 1024 / 1024
     total_mem_mb = Ft_t.element_size() * Ft_t.nelement() / 1024 / 1024 + \
                    Y_t.element_size() * Y_t.nelement() / 1024 / 1024 + \
+                   Y_raw_t.element_size() * Y_raw_t.nelement() / 1024 / 1024 + \
                    industry_mem_mb + universe_mem_mb
     
     print("\n記憶體使用估算：")
     print(f" - 特徵張量 (Ft): {Ft_t.element_size() * Ft_t.nelement() / 1024 / 1024:.1f} MB")
     print(f" - 標籤張量 (yt): {Y_t.element_size() * Y_t.nelement() / 1024 / 1024:.1f} MB")
+    print(f" - 原始標籤 (yraw): {Y_raw_t.element_size() * Y_raw_t.nelement() / 1024 / 1024:.1f} MB")
     print(f" - 產業圖: {industry_mem_mb:.1f} MB")
     print(f" - 全市場圖: {universe_mem_mb:.1f} MB")
     print(f" - 總計約: {total_mem_mb:.1f} MB")

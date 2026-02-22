@@ -33,7 +33,7 @@ import matplotlib
 matplotlib.use('Agg')  # 使用非互動式後端
 
 from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
-from train_gat_fixed import load_artifacts, time_split_indices
+from train_gat_fixed import load_artifacts, time_split_indices_3
 # ---------- Device Selection ----------
 def pick_device(device_str: str) -> torch.device:
     """自動選擇可用的計算裝置"""
@@ -208,7 +208,8 @@ def load_industry_labels(industry_csv, stocks):
 def build_reports(artifact_dir, weights, out_dir,
                   device="auto", tanh_cap=0.2, hid=64, heads=2,
                   top_pct=0.10, rebalance_days=5,
-                  benchmark_csv=None, industry_csv=None):
+                  benchmark_csv=None, industry_csv=None,
+                  train_ratio=0.8, val_ratio=0.1):
     """
     生成完整的視覺化報告
     
@@ -245,16 +246,30 @@ def build_reports(artifact_dir, weights, out_dir,
     edge_industry = edge_industry.to(device)
     edge_universe = edge_universe.to(device)
 
+    # 回測報酬優先使用原始 forward return，避免和去均值標籤混用
+    y_backtest = yt
+    raw_label_path = os.path.join(artifact_dir, "yraw_tensor.pt")
+    if os.path.exists(raw_label_path):
+        try:
+            y_backtest = torch.load(raw_label_path, map_location=device).to(device)
+        except Exception as e:
+            print(f"[warn] 載入 yraw_tensor.pt 失敗，回退 yt: {e}")
+            y_backtest = yt
+    else:
+        print("[warn] 找不到 yraw_tensor.pt，回測將使用去均值 yt（和基準口徑不同）")
+
     T, N, Fdim = Ft.shape
     horizon_k = int(meta.get("horizon", rebalance_days))
     dates_all = parse_dates_list(meta["dates"])
-    _, test_idx = time_split_indices(meta["dates"], 0.8)
+    _, val_idx, test_idx = time_split_indices_3(
+        meta["dates"], train_ratio=train_ratio, val_ratio=val_ratio
+    )
     
     stocks = meta.get("stocks", [str(i) for i in range(N)])
     feature_cols = meta.get("feature_cols", [])
 
     print(f"資料: T={T}, N={N}, F={Fdim}")
-    print(f"測試期: {len(test_idx)} 天")
+    print(f"驗證期: {len(val_idx)} 天 | 測試期: {len(test_idx)} 天")
 
     # 偵測並載入模型
     model_type = detect_model_type(weights, device=device)
@@ -407,7 +422,8 @@ def build_reports(artifact_dir, weights, out_dir,
         for t in take_idx:
             x = Ft[t]
             y = yt[t]
-            mask = torch.isfinite(y)
+            y_bt = y_backtest[t]
+            mask = torch.isfinite(y) & torch.isfinite(y_bt)
             if mask.sum() == 0:
                 continue
             
@@ -420,7 +436,7 @@ def build_reports(artifact_dir, weights, out_dir,
             
             # ✅ 修正：統一加 flatten()
             P = p[mask].detach().cpu().numpy().flatten()
-            Y = y[mask].detach().cpu().numpy().flatten()
+            Y = y_bt[mask].detach().cpu().numpy().flatten()
             
             # 取前 top_pct
             qh = np.nanquantile(P, 1.0 - float(top_pct))
@@ -577,6 +593,10 @@ def main():
                     help="基準 CSV 檔案（例如 GAT0050.csv）")
     ap.add_argument("--industry_csv", type=str, default=None,
                     help="產業對照表 CSV 檔案")
+    ap.add_argument("--train_ratio", type=float, default=0.8,
+                    help="train+val 的切分比例（test 從此比例之後開始）")
+    ap.add_argument("--val_ratio", type=float, default=0.1,
+                    help="在 train 區段中劃給 validation 的比例")
     
     args = ap.parse_args()
 
@@ -591,7 +611,9 @@ def main():
         top_pct=args.top_pct,
         rebalance_days=args.rebalance_days,
         benchmark_csv=args.benchmark_csv,
-        industry_csv=args.industry_csv
+        industry_csv=args.industry_csv,
+        train_ratio=args.train_ratio,
+        val_ratio=args.val_ratio,
     )
 
 

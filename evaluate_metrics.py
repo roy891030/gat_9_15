@@ -22,7 +22,7 @@ import torch
 import pandas as pd
 
 from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
-from train_gat_fixed import load_artifacts, time_split_indices
+from train_gat_fixed import load_artifacts, time_split_indices_3
 
 EPS = 1e-8
 
@@ -333,6 +333,10 @@ def main():
                     help="隱藏層維度（需與訓練時一致）")
     ap.add_argument("--heads", type=int, default=2,
                     help="GAT 注意力頭數（需與訓練時一致）")
+    ap.add_argument("--train_ratio", type=float, default=0.8,
+                    help="train+val 的切分比例（test 從此比例之後開始）")
+    ap.add_argument("--val_ratio", type=float, default=0.1,
+                    help="在 train 區段中劃給 validation 的比例")
     args = ap.parse_args()
 
     device = pick_device(args.device)
@@ -349,7 +353,9 @@ def main():
     edge_universe = edge_universe.to(device)
     
     T, N, Fdim = Ft.shape
-    train_idx, test_idx = time_split_indices(meta["dates"], 0.8)
+    train_idx, val_idx, test_idx = time_split_indices_3(
+        meta["dates"], train_ratio=args.train_ratio, val_ratio=args.val_ratio
+    )
 
     model_type = detect_model_type(args.weights, Fdim, device=device)
 
@@ -376,7 +382,7 @@ def main():
 
     print(f"資料: T={T}, N={N}, F={Fdim}")
     print(f"產業標籤: {'有 ✓' if has_industry else '無'}")
-    print(f"訓練集: {len(train_idx)} 天 | 測試集: {len(test_idx)} 天")
+    print(f"訓練集: {len(train_idx)} 天 | 驗證集: {len(val_idx)} 天 | 測試集: {len(test_idx)} 天")
 
     print("\n評估訓練集...")
     tr = eval_indices(model, Ft, yt, edge_industry, edge_universe, train_idx, 

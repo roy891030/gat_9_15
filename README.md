@@ -109,6 +109,7 @@ python build_artifacts.py \
 **輸出檔案：**
 - `gat_artifacts/Ft_tensor.pt` - 特徵張量 [T, N, F]
 - `gat_artifacts/yt_tensor.pt` - 標籤張量 [T, N]
+- `gat_artifacts/yraw_tensor.pt` - 原始 forward-k 報酬 [T, N]（回測/基準比較使用）
 - `gat_artifacts/industry_edge_index.pt` - 產業圖結構
 - `gat_artifacts/universe_edge_index.pt` - 全市場圖結構
 - `gat_artifacts/meta.pkl` - Metadata

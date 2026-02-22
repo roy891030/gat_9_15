@@ -112,6 +112,38 @@ def time_split_indices(dates, train_ratio=0.8):
     T = len(dates); split = int(T*train_ratio)
     return list(range(split)), list(range(split, T))
 
+def time_split_indices_3(dates, train_ratio=0.8, val_ratio=0.1):
+    """
+    時序三段切分（train / val / test）
+
+    切分規則：
+    1) 先用 train_ratio 決定 test 起點（維持和舊版 test 區間一致）
+    2) 再從 train 區段尾端切出 val_ratio 比例作 validation
+    """
+    T = len(dates)
+    if T < 3:
+        # 太短時退化：至少保留最後一天做 test
+        if T <= 1:
+            return list(range(T)), [], []
+        return list(range(T - 1)), [], [T - 1]
+
+    test_start = int(T * train_ratio)
+    test_start = max(2, min(test_start, T - 1))
+
+    train_val_len = test_start
+    val_len = int(train_val_len * val_ratio)
+    if val_len < 1 and train_val_len >= 2:
+        val_len = 1
+    if train_val_len - val_len < 1:
+        val_len = max(0, train_val_len - 1)
+
+    train_end = train_val_len - val_len
+
+    train_idx = list(range(0, train_end))
+    val_idx = list(range(train_end, test_start))
+    test_idx = list(range(test_start, T))
+    return train_idx, val_idx, test_idx
+
 
 def load_industry_map(industry_csv, stocks):
     """
@@ -200,13 +232,15 @@ def train(args):
     edge_universe = edge_universe.to(device)
     
     T, N, Fdim = Ft.shape
-    train_idx, test_idx = time_split_indices(meta["dates"], train_ratio=0.8)
+    train_idx, val_idx, test_idx = time_split_indices_3(
+        meta["dates"], train_ratio=args.train_ratio, val_ratio=args.val_ratio
+    )
     
     print("=" * 60)
     print(f"資料載入完成：T={T}, N={N}, F={Fdim}")
     print(f"產業圖邊數: {edge_industry.shape[1]:,}")
     print(f"全市場圖邊數: {edge_universe.shape[1]:,}")
-    print(f"訓練集: {len(train_idx)} 天 | 測試集: {len(test_idx)} 天")
+    print(f"訓練集: {len(train_idx)} 天 | 驗證集: {len(val_idx)} 天 | 測試集: {len(test_idx)} 天")
     print("=" * 60)
 
     # 載入產業分組（用於 corr_mse_ind 損失）
@@ -259,8 +293,10 @@ def train(args):
             # 全市場相關性損失
             c = corr_loss(pred[mask], y[mask])
             mse_anchor = F.mse_loss(pred[mask], y[mask])
-            var_pen = torch.var(pred[mask])
-            loss = c + args.alpha_mse*mse_anchor - args.lambda_var*var_pen
+            pred_var = torch.var(pred[mask], unbiased=False)
+            y_var = torch.var(y[mask], unbiased=False).detach()
+            var_pen = (pred_var - y_var) ** 2
+            loss = c + args.alpha_mse*mse_anchor + args.lambda_var*var_pen
             score = 1.0 - c.item()  # 用 IC 作為 score
             
         elif args.loss == "corr_mse_ind":
@@ -272,8 +308,10 @@ def train(args):
                     clist.append(corr_loss(pred[idxs][use], y[idxs][use]))
             cind = torch.stack(clist).mean() if len(clist)>0 else corr_loss(pred[mask], y[mask])
             mse_anchor = F.mse_loss(pred[mask], y[mask])
-            var_pen = torch.var(pred[mask])
-            loss = cind + args.alpha_mse*mse_anchor - args.lambda_var*var_pen
+            pred_var = torch.var(pred[mask], unbiased=False)
+            y_var = torch.var(y[mask], unbiased=False).detach()
+            var_pen = (pred_var - y_var) ** 2
+            loss = cind + args.alpha_mse*mse_anchor + args.lambda_var*var_pen
             score = 1.0 - cind.item()
         else:
             # 預設：MSE
@@ -309,11 +347,13 @@ def train(args):
             total_score += score
             steps += 1
 
-        # 驗證集評估
+        # 驗證集評估（若沒有 val，退回 test 監控）
+        monitor_idx = val_idx if len(val_idx) > 0 else test_idx
+        monitor_name = "val" if len(val_idx) > 0 else "test"
         with torch.no_grad():
             model.eval()
             val_scores, vsteps = 0.0, 0
-            for t in test_idx:
+            for t in monitor_idx:
                 x = Ft[t]; y = yt[t]
                 mask = torch.isfinite(y)
                 if mask.sum()==0: continue
@@ -326,16 +366,17 @@ def train(args):
                 vsteps += 1
             val_score = val_scores / max(vsteps,1)
 
-        # 測試集 MSE（額外指標）
-        test_mse = evaluate_mse(model, Ft, yt, edge_industry, edge_universe, 
-                                test_idx, device=device)
+        # 監控區段 MSE（額外指標）
+        mon_mse = evaluate_mse(
+            model, Ft, yt, edge_industry, edge_universe, monitor_idx, device=device
+        )
         
         # 輸出訓練狀態
         is_best = (best_score is None or val_score > best_score)
         print(f"Epoch {ep:02d} | "
               f"train {args.loss} {total_score/max(steps,1):.6f} | "
-              f"test {args.loss} {val_score:.6f} | "
-              f"test MSE {test_mse:.6f}"
+              f"{monitor_name} {args.loss} {val_score:.6f} | "
+              f"{monitor_name} MSE {mon_mse:.6f}"
               + (" <-- best" if is_best else ""))
 
         # Early Stopping
@@ -355,9 +396,15 @@ def train(args):
     
     out = os.path.join(args.artifact_dir, "gat_regressor.pt")
     torch.save(model.state_dict(), out)
+
+    # 最終僅報告一次 holdout test（避免用 test 做早停）
+    final_test_mse = evaluate_mse(
+        model, Ft, yt, edge_industry, edge_universe, test_idx, device=device
+    )
     
     print("=" * 60)
     print(f"訓練完成！最佳 {args.loss} score: {best_score:.6f}")
+    print(f"最終測試集 MSE: {final_test_mse:.6f}")
     print(f"模型權重已儲存至: {out}")
     print("=" * 60)
 
@@ -406,6 +453,10 @@ if __name__ == "__main__":
                     help="變異數懲罰/鼓勵項權重")
     ap.add_argument("--lambda_attn", type=float, default=0.05,
                     help="DMFM 注意力估計誤差權重")
+    ap.add_argument("--train_ratio", type=float, default=0.8,
+                    help="train+val 的切分比例（test 從此比例之後開始）")
+    ap.add_argument("--val_ratio", type=float, default=0.1,
+                    help="在 train 區段中劃給 validation 的比例")
     
     args = ap.parse_args()
 

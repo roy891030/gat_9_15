@@ -42,6 +42,7 @@ def parse_args():
     ap.add_argument("--lambda_ic", type=float, default=1.0, help="IC 損失權重")
     ap.add_argument("--patience", type=int, default=30, help="Early stopping 耐心值")
     ap.add_argument("--train_ratio", type=float, default=0.8, help="訓練集比例")
+    ap.add_argument("--val_ratio", type=float, default=0.1, help="在 train 區段中劃給 validation 的比例")
     return ap.parse_args()
 
 
@@ -66,16 +67,48 @@ def pick_device(device_str: str) -> torch.device:
     return torch.device("cpu")
 
 
-def compute_ic(pred, target):
+def time_split_indices_3(dates, train_ratio=0.8, val_ratio=0.1):
     """
-    計算 Information Coefficient (Pearson correlation)
+    時序三段切分（train / val / test）
+
+    切分規則：
+    1) 先用 train_ratio 決定 test 起點
+    2) 再從 train 區段尾端切出 val_ratio 比例作 validation
+    """
+    T = len(dates)
+    if T < 3:
+        if T <= 1:
+            return list(range(T)), [], []
+        return list(range(T - 1)), [], [T - 1]
+
+    test_start = int(T * train_ratio)
+    test_start = max(2, min(test_start, T - 1))
+
+    train_val_len = test_start
+    val_len = int(train_val_len * val_ratio)
+    if val_len < 1 and train_val_len >= 2:
+        val_len = 1
+    if train_val_len - val_len < 1:
+        val_len = max(0, train_val_len - 1)
+
+    train_end = train_val_len - val_len
+
+    train_idx = list(range(0, train_end))
+    val_idx = list(range(train_end, test_start))
+    test_idx = list(range(test_start, T))
+    return train_idx, val_idx, test_idx
+
+
+def compute_ic_torch(pred, target, eps=1e-8):
+    """
+    可微分的 Information Coefficient (Pearson correlation)
 
     參數：
-        pred: [N] 預測值
-        target: [N] 真實值
+        pred: [N] or [N,1] 預測值
+        target: [N] or [N,1] 真實值
 
     回傳：
-        ic: float, Pearson 相關係數
+        torch scalar: Pearson 相關係數
     """
     pred = pred.flatten()
     target = target.flatten()
@@ -85,25 +118,30 @@ def compute_ic(pred, target):
     pred = pred[mask]
     target = target[mask]
 
-    if len(pred) < 3:  # 至少需要 3 個樣本
-        return 0.0
+    if pred.numel() < 3:  # 至少需要 3 個樣本
+        return pred.new_tensor(0.0)
 
     # Pearson correlation
     pred_mean = pred.mean()
     target_mean = target.mean()
 
     numerator = ((pred - pred_mean) * (target - target_mean)).sum()
-    pred_std = torch.sqrt(((pred - pred_mean) ** 2).sum())
-    target_std = torch.sqrt(((target - target_mean) ** 2).sum())
+    pred_std = torch.sqrt(((pred - pred_mean) ** 2).sum() + eps)
+    target_std = torch.sqrt(((target - target_mean) ** 2).sum() + eps)
     denominator = pred_std * target_std
 
-    if denominator < 1e-8:
-        return 0.0
+    if not torch.isfinite(denominator):
+        return pred.new_tensor(0.0)
 
-    return (numerator / denominator).item()
+    return numerator / denominator
 
 
-def cross_sectional_regression(factor, returns):
+def compute_ic(pred, target):
+    """評估用：回傳 float IC"""
+    return float(compute_ic_torch(pred, target).item())
+
+
+def cross_sectional_regression_torch(factor, returns, eps=1e-8):
     """
     Cross-sectional regression: r^t = b^t · f^t
 
@@ -122,17 +160,21 @@ def cross_sectional_regression(factor, returns):
     factor = factor[mask]
     returns = returns[mask]
 
-    if len(factor) < 3:
-        return 0.0
+    if factor.numel() < 3:
+        return factor.new_tensor(0.0)
 
     # 簡單線性回歸：b = (f'f)^(-1) f'r
     # 為了數值穩定性，加入 L2 正則化
     factor_centered = factor - factor.mean()
     returns_centered = returns - returns.mean()
 
-    b = (factor_centered * returns_centered).sum() / (factor_centered * factor_centered).sum().clamp(min=1e-8)
+    b = (factor_centered * returns_centered).sum() / ((factor_centered * factor_centered).sum() + eps)
+    return b
 
-    return b.item()
+
+def cross_sectional_regression(factor, returns):
+    """評估用：回傳 float factor return"""
+    return float(cross_sectional_regression_torch(factor, returns).item())
 
 
 def compute_loss(deep_factor, f_hat, returns, lambda_attn=0.1, lambda_ic=1.0):
@@ -154,20 +196,16 @@ def compute_loss(deep_factor, f_hat, returns, lambda_attn=0.1, lambda_ic=1.0):
     """
     # 1. Attention Estimate Loss: d = ||f - f_hat||²
     if f_hat is not None:
-        d = torch.norm(deep_factor - f_hat, p=2)
+        d = torch.mean((deep_factor - f_hat) ** 2)
     else:
         d = torch.tensor(0.0, device=deep_factor.device)
 
-    # 2. Factor Return: b (cross-sectional regression)
-    b = cross_sectional_regression(deep_factor, returns)
-    # Clip factor return to prevent extreme values
-    b_clipped = max(min(b, 10.0), -10.0)
-    b_tensor = torch.tensor(b_clipped, device=deep_factor.device)
+    # 2. Factor Return: b (cross-sectional regression, differentiable)
+    b_tensor = torch.clamp(cross_sectional_regression_torch(deep_factor, returns), min=-10.0, max=10.0)
 
-    # 3. Information Coefficient
-    ic = compute_ic(deep_factor, returns)
-    ic_penalty = 1.0 - ic  # 最小化 (1 - IC) 等價於最大化 IC
-    ic_penalty_tensor = torch.tensor(ic_penalty, device=deep_factor.device)
+    # 3. Information Coefficient (differentiable)
+    ic_tensor = compute_ic_torch(deep_factor, returns)
+    ic_penalty_tensor = 1.0 - ic_tensor  # 最小化 (1 - IC) 等價於最大化 IC
 
     # 4. 綜合損失（降低 factor return 的權重以提高穩定性）
     lambda_b = 0.01  # Factor return 權重
@@ -176,9 +214,9 @@ def compute_loss(deep_factor, f_hat, returns, lambda_attn=0.1, lambda_ic=1.0):
     metrics = {
         'loss': loss.item(),
         'd_attn': d.item(),
-        'b_factor': b,
-        'ic': ic,
-        'ic_penalty': ic_penalty
+        'b_factor': b_tensor.item(),
+        'ic': ic_tensor.item(),
+        'ic_penalty': ic_penalty_tensor.item()
     }
 
     return loss, metrics
@@ -371,12 +409,13 @@ def main():
     print(f"產業圖邊數: {industry_ei.shape[1]:,}")
     print(f"全市場圖邊數: {universe_ei.shape[1]:,}")
 
-    # 訓練/測試切分
-    split_idx = int(T * args.train_ratio)
-    train_indices = list(range(split_idx))
-    test_indices = list(range(split_idx, T))
+    # 訓練/驗證/測試切分（避免 test leakage）
+    train_indices, val_indices, test_indices = time_split_indices_3(
+        meta.get("dates", list(range(T))), train_ratio=args.train_ratio, val_ratio=args.val_ratio
+    )
 
     print(f"\n訓練集: {len(train_indices)} 天")
+    print(f"驗證集: {len(val_indices)} 天")
     print(f"測試集: {len(test_indices)} 天")
 
     # 建立模型
@@ -407,6 +446,8 @@ def main():
     best_icir = -float('inf')
     best_state = None
     patience_counter = 0
+    monitor_indices = val_indices if len(val_indices) > 0 else test_indices
+    monitor_name = "Val" if len(val_indices) > 0 else "Test"
 
     for epoch in range(1, args.epochs + 1):
         # 訓練
@@ -418,16 +459,16 @@ def main():
         # 評估
         if epoch % 5 == 0 or epoch == args.epochs:
             eval_metrics = evaluate(
-                model, Ft, yt, industry_ei, universe_ei, test_indices, device
+                model, Ft, yt, industry_ei, universe_ei, monitor_indices, device
             )
 
             # 輸出
             print(f"Epoch {epoch:3d} | "
                   f"Train Loss: {train_metrics['loss']:.4f} | "
                   f"Train IC: {train_metrics['ic']:.4f} | "
-                  f"Test IC: {eval_metrics['mean_ic']:.4f} | "
-                  f"Test ICIR: {eval_metrics['icir']:.4f} | "
-                  f"Test FR: {eval_metrics['cumulative_factor_return']:.4f}")
+                  f"{monitor_name} IC: {eval_metrics['mean_ic']:.4f} | "
+                  f"{monitor_name} ICIR: {eval_metrics['icir']:.4f} | "
+                  f"{monitor_name} FR: {eval_metrics['cumulative_factor_return']:.4f}")
 
             # Early stopping
             if eval_metrics['icir'] > best_icir:
@@ -440,7 +481,7 @@ def main():
             else:
                 patience_counter += 1
                 if patience_counter >= args.patience:
-                    print(f"\nEarly stopping at epoch {epoch} (best ICIR={best_icir:.4f})")
+                    print(f"\nEarly stopping at epoch {epoch} (best {monitor_name} ICIR={best_icir:.4f})")
                     break
 
     # 載入最佳模型並最終評估

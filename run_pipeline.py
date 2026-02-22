@@ -284,6 +284,10 @@ def run_gat(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, o
             str(cfg.patience),
             "--industry_csv",
             args.industry_csv,
+            "--train_ratio",
+            str(args.train_ratio),
+            "--val_ratio",
+            str(args.val_ratio),
         ]
         run_cmd(cmd_train, log_path=out_dir / "train.log", dry_run=args.dry_run)
     else:
@@ -301,6 +305,10 @@ def run_gat(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, o
         args.device,
         "--industry_csv",
         args.industry_csv,
+        "--train_ratio",
+        str(args.train_ratio),
+        "--val_ratio",
+        str(args.val_ratio),
     ]
     run_cmd(cmd_metrics, log_path=out_dir / "metrics.log", dry_run=args.dry_run)
 
@@ -323,6 +331,10 @@ def run_gat(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, o
         args.device,
         "--industry_csv",
         args.industry_csv,
+        "--train_ratio",
+        str(args.train_ratio),
+        "--val_ratio",
+        str(args.val_ratio),
     ]
     run_cmd(cmd_backtest, log_path=out_dir / "backtest.log", dry_run=args.dry_run)
 
@@ -368,6 +380,8 @@ def run_dmfm(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, 
             str(cfg.patience),
             "--train_ratio",
             str(args.train_ratio),
+            "--val_ratio",
+            str(args.val_ratio),
         ]
         run_cmd(cmd_train, log_path=out_dir / "train.log", dry_run=args.dry_run)
     else:
@@ -385,6 +399,10 @@ def run_dmfm(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, 
         args.device,
         "--industry_csv",
         args.industry_csv,
+        "--train_ratio",
+        str(args.train_ratio),
+        "--val_ratio",
+        str(args.val_ratio),
     ]
     run_cmd(cmd_metrics, log_path=out_dir / "metrics.log", dry_run=args.dry_run)
 
@@ -407,6 +425,10 @@ def run_dmfm(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, 
         args.device,
         "--industry_csv",
         args.industry_csv,
+        "--train_ratio",
+        str(args.train_ratio),
+        "--val_ratio",
+        str(args.val_ratio),
     ]
     run_cmd(cmd_backtest, log_path=out_dir / "backtest.log", dry_run=args.dry_run)
 
@@ -479,6 +501,7 @@ def parse_args():
     ap.add_argument("--top_pct", type=float, default=0.10)
     ap.add_argument("--rebalance_days", type=int, default=5)
     ap.add_argument("--train_ratio", type=float, default=0.8)
+    ap.add_argument("--val_ratio", type=float, default=0.1)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--skip_build", action="store_true")
     ap.add_argument("--skip_train", action="store_true")
@@ -508,6 +531,8 @@ def main():
         "models": models,
         "baseline_models": baseline_models,
         "windows": windows,
+        "train_ratio": args.train_ratio,
+        "val_ratio": args.val_ratio,
         "artifacts": {},
         "runs": [],
         "dry_run": args.dry_run,

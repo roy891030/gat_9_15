@@ -235,6 +235,16 @@ def evaluate_and_plot(
     ft, yt, _, _, meta = load_artifacts(artifact_dir)
     ft = ft.float()
     yt = yt
+    y_backtest = yt
+    raw_label_path = os.path.join(artifact_dir, "yraw_tensor.pt")
+    if os.path.exists(raw_label_path):
+        try:
+            y_backtest = torch.load(raw_label_path)
+        except Exception as e:
+            print(f"[warn] failed to load yraw_tensor.pt, fallback to yt: {e}")
+            y_backtest = yt
+    else:
+        print("[warn] yraw_tensor.pt not found; backtest uses demeaned yt")
     dates = parse_dates_list(meta["dates"])
     _, test_idx = time_split_indices(meta["dates"], train_ratio=train_ratio)
     horizon_k = int(meta.get("horizon", rebalance_days))
@@ -271,12 +281,14 @@ def evaluate_and_plot(
 
     for t in test_idx:
         y_t = yt[t]
-        mask = torch.isfinite(y_t)
+        y_bt_t = y_backtest[t]
+        mask = torch.isfinite(y_t) & torch.isfinite(y_bt_t)
         if mask.sum() == 0:
             continue
 
         x_t = torch.nan_to_num(ft[t], nan=0.0)
         y_np = y_t[mask].cpu().numpy().flatten()
+        y_bt_np = y_bt_t[mask].cpu().numpy().flatten()
 
         if model_name in {"linear", "xgboost"}:
             p_np = predict_day_non_lstm(model, scaler, x_t, mask)
@@ -290,7 +302,7 @@ def evaluate_and_plot(
 
         preds_all.append(p_np)
         truths_all.append(y_np)
-        day_cache[t] = (p_np, y_np)
+        day_cache[t] = (p_np, y_bt_np)
         test_dates.append(dates[t])
 
         ic = safe_corr(p_np, y_np)
