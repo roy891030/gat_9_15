@@ -289,7 +289,13 @@ def build_reports(artifact_dir, weights, out_dir,
             tanh_cap=tanh_cap
         ).to(device)
     
-    model.load_state_dict(torch.load(weights, map_location=device))
+    state = torch.load(weights, map_location=device)
+    if model_type == "dmfm":
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        if missing or unexpected:
+            print(f"[warn] DMFM 權重鍵不完全匹配 (missing={len(missing)}, unexpected={len(unexpected)})")
+    else:
+        model.load_state_dict(state)
     model.eval()
 
     # 收集測試期數據

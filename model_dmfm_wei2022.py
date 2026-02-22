@@ -140,6 +140,13 @@ class DMFM_Wei2022(nn.Module):
         # 用於解釋深度因子來自哪些原始特徵
         if use_factor_attention:
             self.factor_attention = nn.Linear(self.num_features, self.num_features)
+            # 將注意力加權後的原始特徵映射到因子空間，避免直接加總造成尺度不一致
+            self.attn_factor_head = nn.Sequential(
+                nn.Linear(self.num_features, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, 1)
+            )
 
     def forward(self, x, industry_edge_index, universe_edge_index):
         """
@@ -190,13 +197,14 @@ class DMFM_Wei2022(nn.Module):
         # ==================== Step 6: Factor Attention (Interpretation) ====================
         if self.use_factor_attention:
             # 學習原始特徵的注意力權重（論文公式 9-12）
-            U = F.leaky_relu(self.factor_attention(x), negative_slope=0.2)  # [N, F]
+            U = F.leaky_relu(self.factor_attention(x_norm), negative_slope=0.2)  # [N, F]
             attn_weights = F.softmax(U, dim=-1)  # [N, F] 每個股票對每個特徵的注意力
         else:
             attn_weights = None
 
         # ==================== Collect Contexts for Analysis ====================
         contexts = {
+            'x_norm': x_norm,  # 正規化後的原始特徵（供 f_hat 估計使用）
             'C': C,       # 原始編碼特徵
             'C_I': C_I,   # 產業中性化特徵
             'C_U': C_U,   # 全市場中性化特徵
@@ -206,7 +214,7 @@ class DMFM_Wei2022(nn.Module):
 
         return deep_factor, attn_weights, contexts
 
-    def interpret_factor(self, x, attn_weights):
+    def interpret_factor(self, x, attn_weights, x_norm=None):
         """
         解釋深度因子：f̂^t = F^T · ā^t
 
@@ -220,8 +228,10 @@ class DMFM_Wei2022(nn.Module):
         if attn_weights is None:
             return None
 
-        # 用注意力權重加權原始特徵（論文公式 12）
-        f_hat = (x * attn_weights).sum(dim=-1, keepdim=True)  # [N, 1]
+        # 用注意力權重加權後，透過可學習投影頭映射到因子空間
+        x_ref = x_norm if x_norm is not None else x
+        weighted_x = x_ref * attn_weights  # [N, F]
+        f_hat = self.attn_factor_head(weighted_x)  # [N, 1]
         return f_hat
 
     def get_attention_importance(self, x, attn_weights):

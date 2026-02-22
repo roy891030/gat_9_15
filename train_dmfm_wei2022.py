@@ -38,7 +38,7 @@ def parse_args():
     ap.add_argument("--heads", type=int, default=2, help="GAT 注意力頭數")
     ap.add_argument("--dropout", type=float, default=0.1, help="Dropout 比例")
     ap.add_argument("--weight_decay", type=float, default=0.01, help="權重衰減")
-    ap.add_argument("--lambda_attn", type=float, default=0.1, help="注意力損失權重")
+    ap.add_argument("--lambda_attn", type=float, default=0.05, help="注意力損失權重")
     ap.add_argument("--lambda_ic", type=float, default=1.0, help="IC 損失權重")
     ap.add_argument("--patience", type=int, default=30, help="Early stopping 耐心值")
     ap.add_argument("--train_ratio", type=float, default=0.8, help="訓練集比例")
@@ -177,7 +177,7 @@ def cross_sectional_regression(factor, returns):
     return float(cross_sectional_regression_torch(factor, returns).item())
 
 
-def compute_loss(deep_factor, f_hat, returns, lambda_attn=0.1, lambda_ic=1.0):
+def compute_loss(deep_factor, f_hat, returns, lambda_attn=0.05, lambda_ic=1.0):
     """
     計算 DMFM 損失函數（論文公式 13）
 
@@ -194,9 +194,13 @@ def compute_loss(deep_factor, f_hat, returns, lambda_attn=0.1, lambda_ic=1.0):
         loss: 總損失
         metrics: dict, 包含各損失組件
     """
-    # 1. Attention Estimate Loss: d = ||f - f_hat||²
+    # 1. Attention Estimate Loss（標準化後比較形狀，避免尺度偏誤）
     if f_hat is not None:
-        d = torch.mean((deep_factor - f_hat) ** 2)
+        deep = deep_factor.flatten()
+        hat = f_hat.flatten()
+        deep_z = (deep - deep.mean()) / (deep.std(unbiased=False) + 1e-6)
+        hat_z = (hat - hat.mean()) / (hat.std(unbiased=False) + 1e-6)
+        d = torch.mean((deep_z - hat_z) ** 2)
     else:
         d = torch.tensor(0.0, device=deep_factor.device)
 
@@ -294,7 +298,7 @@ def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei,
         deep_factor, attn_weights, contexts = model(x_t, industry_ei_filtered, universe_ei_filtered)
 
         # Attention estimate
-        f_hat = model.interpret_factor(x_t, attn_weights)
+        f_hat = model.interpret_factor(x_t, attn_weights, x_norm=contexts.get("x_norm"))
 
         # 計算損失
         loss, metrics = compute_loss(deep_factor, f_hat, y_t, lambda_attn, lambda_ic)

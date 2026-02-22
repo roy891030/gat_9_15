@@ -46,7 +46,7 @@ class DMFMConfig:
     hidden_dim: int = 64
     heads: int = 2
     dropout: float = 0.1
-    lambda_attn: float = 0.1
+    lambda_attn: float = 0.05
     lambda_ic: float = 1.0
 
 

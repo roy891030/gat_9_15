@@ -374,7 +374,13 @@ def main():
             tanh_cap=args.tanh_cap
         ).to(device)
     
-    model.load_state_dict(torch.load(args.weights, map_location=device))
+    state = torch.load(args.weights, map_location=device)
+    if model_type == "dmfm":
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        if missing or unexpected:
+            print(f"[warn] DMFM 權重鍵不完全匹配 (missing={len(missing)}, unexpected={len(unexpected)})")
+    else:
+        model.load_state_dict(state)
 
     stocks = meta.get("stocks", [str(i) for i in range(N)])
     inds = load_industry_labels(args.industry_csv, stocks)
