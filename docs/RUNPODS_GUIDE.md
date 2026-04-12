@@ -204,8 +204,8 @@ gat_9_15/
 │   └── train_gat.log
 │
 ├── Artifacts（模型和資料）
-│   ├── artifacts_short|medium|long/  # 依視窗分組
-│   └── experiments/                  # run_core_experiments.sh 產出的指標與圖表
+│   ├── artifacts/{short,medium,long}/ # 依視窗分組
+│   └── runs/                         # run_pipeline.py 統一產出的 metrics/backtest/plots
 │
 ├── 範例輸出（只讀參考）
 │   └── examples/

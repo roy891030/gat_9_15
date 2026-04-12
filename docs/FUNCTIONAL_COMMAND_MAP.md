@@ -39,16 +39,16 @@
 - **功能**：提供非圖模型基準以比較 DMFM/GAT 效果。
 - **指令**：`python train_baselines.py`
 - **常用參數**：
-  - 通用：`--artifact_dir`、`--model {linear,lstm,xgboost}`、`--train_ratio`、`--device`、`--seed`。
+  - 通用：`--artifact_dir`、`--model {linear,lstm,xgboost}`、`--train_ratio`、`--val_ratio`、`--device`、`--seed`。
   - LSTM：`--lookback`、`--epochs`、`--batch_size`、`--hidden_dim`、`--dropout`、`--lr`。
   - XGBoost：`--n_estimators`、`--max_depth`、`--learning_rate`、`--subsample`、`--colsample_bytree`。【56db31†L267-L288】
-- **輸出**：各模型權重 + scaler（linear/xgboost）與 `baseline_<model>_metrics.json` 指標檔，含訓練/測試的 MSE、IC、ICIR、方向準確率等。【F:README.md†L225-L233】
+- **輸出**：各模型權重 + scaler（linear/xgboost）與 `baseline_<model>_metrics.json` 指標檔，含 `train/val/test` 的 MSE、IC、ICIR、方向準確率等。
 
 ## 5. 評估指標（IC/ICIR/MSE/DirAcc 等）
 - **功能**：載入模型權重與 artifacts，輸出多項預測指標。
 - **指令**：`python evaluate_metrics.py`
 - **常用參數**：`--artifact_dir`、`--weights`、`--device`、`--tanh_cap`、`--industry_csv`、`--hid`、`--heads`。【6eab2f†L1-L14】
-- **輸出**：終端列印與檔案（在 `artifact_dir` 或 `experiments/`）的指標結果，對應 README 中表格範圍。【F:README.md†L117-L133】
+- **輸出**：終端列印與 `runs/<window>/<model>/metrics.json` 的結構化評估結果，對應 README 中表格範圍。
 
 ## 6. 階層式特徵分析
 - **功能**：檢視 C/C_I/C_U 分布、變異數降低與 PCA 投影以解讀階層式中性化效果。
@@ -60,12 +60,12 @@
 - **功能**：依模型預測生成選股、回測績效、IC 時序、命中率等完整報告，可含注意力圖。
 - **指令**：`python plot_reports.py`
 - **常用參數**：`--artifact_dir`、`--weights`、`--out_dir`、`--device`、`--tanh_cap`、`--hid`、`--heads`；策略設定 `--top_pct`、`--rebalance_days`；基準/產業 CSV 透過 `--benchmark_csv`、`--industry_csv`。【9a73d4†L1-L12】【F:README.md†L168-L185】
-- **輸出**：回測曲線、IC/命中率/離散度等圖表與注意力權重視覺化，統一存於 `out_dir`。【F:README.md†L168-L185】
+- **輸出**：回測曲線、IC/命中率/離散度等圖表與注意力權重視覺化，並同步輸出 `runs/<window>/<model>/portfolio.json`。
 
 ## 8. 一鍵核心實驗
 - **功能**：批次執行短/中/長期 DMFM 與 GAT 對照四組實驗。
 - **指令**：`bash run_all_models.sh`
-- **輸出**：`artifacts_short|medium|long/`、`experiments/` 結果與 `examples/` 參考樣本，耗時估計 3.5~4 小時（RTX 5090）。【F:README.md†L237-L259】
+- **輸出**：`artifacts/<window>/`、`runs/<window>/<model>/` 與 `runs/run_summary.json`，另保留 `examples/` 參考樣本；耗時依模型與視窗而定。【F:README.md†L237-L262】
 
 ## 9. 其他工具
 - `evaluate_portfolio.py`：著重回測與注意力視覺化，參數與 `plot_reports.py` 接近。【3b3fdb†L500-L543】

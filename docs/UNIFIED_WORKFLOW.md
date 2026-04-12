@@ -78,15 +78,16 @@ bash post_process_all.sh
 - `runs/<window>/<model>/`
   - `train.log`
   - `metrics.log`（GAT/DMFM）
-  - `evaluate.log`（baseline）
   - `backtest.log`
+  - `metrics.json`
+  - `portfolio.json`
   - `plots/`
     - `daily_ic.png`
     - `pred_dispersion.png`
     - `hitrate_by_month.png`
     - `ic_distribution.png`
     - `cum_returns.png`
-    - `metrics.json`（baseline）
+    - `attention_weights.png`（DMFM only）
 
 - `runs/run_summary.json`：本次執行摘要。
 

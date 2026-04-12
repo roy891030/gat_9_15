@@ -22,6 +22,7 @@ bash run_all_models.sh
 ```
 
 **包含：** 短期/中期/長期 DMFM + GATRegressor 對照
+也包含 baseline：`linear / xgboost / lstm`
 **時間：** 約 3.5-4 小時（RTX 5090）
 
 ---
