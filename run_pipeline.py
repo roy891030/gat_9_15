@@ -11,6 +11,7 @@ Goals:
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -168,6 +169,16 @@ def ensure_artifact(
     summary["artifacts"][window] = str(artifact_dir)
 
 
+def copy_json_artifact(src: Path, dst: Path, dry_run: bool = False):
+    if dry_run:
+        print(f"[dry-run] copy {src} -> {dst}")
+        return
+    if not src.exists():
+        raise FileNotFoundError(f"Expected JSON artifact not found: {src}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
+
+
 def run_baseline(
     py: str,
     window: str,
@@ -191,6 +202,8 @@ def run_baseline(
             baseline_model,
             "--train_ratio",
             str(args.train_ratio),
+            "--val_ratio",
+            str(args.val_ratio),
             "--device",
             args.device,
         ]
@@ -220,6 +233,10 @@ def run_baseline(
     else:
         print(f"[skip-train] baseline_{baseline_model} {window}")
 
+    baseline_metrics_src = artifact_dir / f"baseline_{baseline_model}_metrics.json"
+    baseline_metrics_dst = out_dir / "metrics.json"
+    copy_json_artifact(baseline_metrics_src, baseline_metrics_dst, dry_run=args.dry_run)
+
     cmd_eval = [
         py,
         "evaluate_baseline_portfolio.py",
@@ -239,8 +256,10 @@ def run_baseline(
         args.device,
         "--train_ratio",
         str(args.train_ratio),
+        "--val_ratio",
+        str(args.val_ratio),
     ]
-    run_cmd(cmd_eval, log_path=out_dir / "evaluate.log", dry_run=args.dry_run)
+    run_cmd(cmd_eval, log_path=out_dir / "backtest.log", dry_run=args.dry_run)
 
     summary["runs"].append(
         {
@@ -248,6 +267,9 @@ def run_baseline(
             "model": f"baseline_{baseline_model}",
             "artifact_dir": str(artifact_dir),
             "output_dir": str(out_dir),
+            "metrics_json": str(baseline_metrics_dst),
+            "portfolio_json": str(out_dir / "portfolio.json"),
+            "plots_dir": str(out_dir / "plots"),
         }
     )
 
@@ -309,6 +331,8 @@ def run_gat(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, o
         str(args.train_ratio),
         "--val_ratio",
         str(args.val_ratio),
+        "--out_json",
+        str(out_dir / "metrics.json"),
     ]
     run_cmd(cmd_metrics, log_path=out_dir / "metrics.log", dry_run=args.dry_run)
 
@@ -344,6 +368,9 @@ def run_gat(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, o
             "model": "gat",
             "artifact_dir": str(artifact_dir),
             "output_dir": str(out_dir),
+            "metrics_json": str(out_dir / "metrics.json"),
+            "portfolio_json": str(out_dir / "portfolio.json"),
+            "plots_dir": str(out_dir / "plots"),
         }
     )
 
@@ -403,6 +430,8 @@ def run_dmfm(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, 
         str(args.train_ratio),
         "--val_ratio",
         str(args.val_ratio),
+        "--out_json",
+        str(out_dir / "metrics.json"),
     ]
     run_cmd(cmd_metrics, log_path=out_dir / "metrics.log", dry_run=args.dry_run)
 
@@ -470,6 +499,9 @@ def run_dmfm(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, 
             "artifact_dir": str(artifact_dir),
             "output_dir": str(out_dir),
             "extra_analysis": args.extra_analysis,
+            "metrics_json": str(out_dir / "metrics.json"),
+            "portfolio_json": str(out_dir / "portfolio.json"),
+            "plots_dir": str(out_dir / "plots"),
         }
     )
 

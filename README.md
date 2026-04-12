@@ -227,7 +227,8 @@ python plot_reports.py \
 python train_baselines.py \
   --artifact_dir gat_artifacts \
   --model linear \
-  --train_ratio 0.8
+  --train_ratio 0.8 \
+  --val_ratio 0.1
 ```
 
 **2) XGBoost**
@@ -236,6 +237,8 @@ python train_baselines.py \
 python train_baselines.py \
   --artifact_dir gat_artifacts \
   --model xgboost \
+  --train_ratio 0.8 \
+  --val_ratio 0.1 \
   --n_estimators 300 \
   --max_depth 6 \
   --learning_rate 0.05
@@ -247,6 +250,8 @@ python train_baselines.py \
 python train_baselines.py \
   --artifact_dir gat_artifacts \
   --model lstm \
+  --train_ratio 0.8 \
+  --val_ratio 0.1 \
   --lookback 10 \
   --epochs 30 \
   --batch_size 256 \
@@ -261,7 +266,7 @@ python train_baselines.py \
 | xgboost | `baseline_xgboost.json` | `baseline_xgboost_scaler.pkl` | `baseline_xgboost_metrics.json` |
 | lstm | `baseline_lstm.pt` | - | `baseline_lstm_metrics.json` |
 
-每個指標檔包含訓練/測試集的 MSE、IC、ICIR、方向準確率等，方便與 DMFM、GAT 作圖或表格比較。
+每個指標檔目前統一包含 `train / val / test`、`naive_test`、`split`、`mse_improvement_vs_naive_pct` 等欄位，方便與 DMFM、GAT 的 `metrics.json` 直接對齊比較。
 
 ---
 
@@ -271,23 +276,29 @@ python train_baselines.py \
 bash run_all_models.sh
 ```
 
-**包含以下 4 個實驗：**
+**包含以下實驗：**
 
 | 實驗 | 模型 | 時間範圍 | 資料量 | 預估時間 |
 |------|------|---------|--------|---------|
-| 1 | DMFM | 2019-2020 (短期) | 1.3年 | ~40分鐘 |
-| 2 | DMFM | 2019-2022 (中期) | 3.3年 | ~60分鐘 |
-| 3 | DMFM | 2019-2025 (長期) | 6年 | ~90分鐘 |
-| 4 | GATRegressor | 2019-2022 (對照) | 3.3年 | ~25分鐘 |
-
-**總時間：** 約 3.5-4 小時（RTX 5090）
+| 1 | baseline (linear / xgboost / lstm) | short / medium / long | 3 個視窗 | 視模型而定 |
+| 2 | GATRegressor | short / medium / long | 3 個視窗 | 視設定而定 |
+| 3 | DMFM | short / medium / long | 3 個視窗 | 視設定而定 |
 
 **輸出結構：**
+```text
+artifacts/<window>/              # short / medium / long artifacts 與模型權重
+runs/<window>/<model>/           # 統一輸出
+  train.log
+  metrics.log                    # GAT / DMFM
+  backtest.log
+  metrics.json
+  portfolio.json
+  plots/
+runs/run_summary.json            # 本次 pipeline 摘要
+examples/                        # 已整理好的示例
 ```
-artifacts_short|medium|long/  # 依時間視窗儲存的訓練張量與權重
-experiments/                  # run_core_experiments.sh 產出的指標/圖表
-examples/                     # 已整理好的範例 artifacts 與 plots（只讀示例）
-```
+
+`GAT0050.csv` 為目前唯一 benchmark 主檔；若更新 benchmark，請以同名 CSV 覆蓋，不再混用 xlsx。
 
 ---
 

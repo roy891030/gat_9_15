@@ -22,6 +22,7 @@ import torch
 import pandas as pd
 
 from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
+from report_utils import save_json
 from train_gat_fixed import load_artifacts, time_split_indices_3
 
 EPS = 1e-8
@@ -337,6 +338,8 @@ def main():
                     help="train+val 的切分比例（test 從此比例之後開始）")
     ap.add_argument("--val_ratio", type=float, default=0.1,
                     help="在 train 區段中劃給 validation 的比例")
+    ap.add_argument("--out_json", type=str, default=None,
+                    help="可選：將結構化評估結果輸出成 JSON")
     args = ap.parse_args()
 
     device = pick_device(args.device)
@@ -394,13 +397,18 @@ def main():
     tr = eval_indices(model, Ft, yt, edge_industry, edge_universe, train_idx, 
                       device=device, inds=inds)
 
+    print("評估驗證集...")
+    va = eval_indices(model, Ft, yt, edge_industry, edge_universe, val_idx,
+                      device=device, inds=inds)
+
     print("評估測試集...")
     te = eval_indices(model, Ft, yt, edge_industry, edge_universe, test_idx, 
-                      device=device, inds=inds, return_predictions=True)
+                      device=device, inds=inds, return_predictions=False)
 
     bz = eval_naive_zero(yt, test_idx)
 
     print_metrics("訓練集", tr, has_industry=has_industry)
+    print_metrics("驗證集", va, has_industry=has_industry)
     print_metrics("測試集", te, has_industry=has_industry)
     
     print(f"\n{'='*60}")
@@ -415,6 +423,8 @@ def main():
         print(f"\n{'='*60}")
         print(f"相對天真基準的 MSE 改善：{impr:.2f}%")
         print(f"{'='*60}")
+    else:
+        impr = np.nan
     
     print(f"\n{'='*60}")
     print("模型效果總結")
@@ -449,6 +459,28 @@ def main():
         print(f"測試集 ICIR: {test_icir:.4f} ({grade})")
     
     print(f"{'='*60}\n")
+
+    if args.out_json:
+        payload = {
+            "model_type": model_type,
+            "artifact_dir": args.artifact_dir,
+            "weights": args.weights,
+            "split": {
+                "train_ratio": args.train_ratio,
+                "val_ratio": args.val_ratio,
+                "train_days": len(train_idx),
+                "val_days": len(val_idx),
+                "test_days": len(test_idx),
+            },
+            "train": tr,
+            "val": va,
+            "test": te,
+            "naive_test": bz,
+            "mse_improvement_vs_naive_pct": impr,
+            "has_industry_labels": has_industry,
+        }
+        save_json(args.out_json, payload)
+        print(f"結構化評估結果已儲存至: {args.out_json}")
 
 
 if __name__ == "__main__":

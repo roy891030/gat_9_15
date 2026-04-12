@@ -33,6 +33,14 @@ import matplotlib
 matplotlib.use('Agg')  # 使用非互動式後端
 
 from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
+from report_utils import (
+    compound_forward,
+    compute_return_stats,
+    infer_summary_dir,
+    parse_benchmark,
+    parse_dates_list,
+    save_json,
+)
 from train_gat_fixed import load_artifacts, time_split_indices_3
 # ---------- Device Selection ----------
 def pick_device(device_str: str) -> torch.device:
@@ -55,37 +63,15 @@ def pick_device(device_str: str) -> torch.device:
 
 
 # ---------- Utilities ----------
-EPS = 1e-8
-
 def safe_corr(a, b):
     """安全計算 Pearson 相關係數"""
     if a.size < 3:
         return np.nan
     sa, sb = a.std(), b.std()
-    if not np.isfinite(sa) or not np.isfinite(sb) or sa < EPS or sb < EPS:
+    if not np.isfinite(sa) or not np.isfinite(sb) or sa < 1e-8 or sb < 1e-8:
         return np.nan
     c = np.corrcoef(a, b)[0, 1]
     return float(c) if np.isfinite(c) else np.nan
-
-
-def parse_dates_list(str_dates):
-    """解析日期字串列表"""
-    return pd.to_datetime(pd.Series(str_dates), errors="coerce").tolist()
-
-def parse_datetime_series(s: pd.Series) -> pd.Series:
-    """盡量穩定地解析日期，避免格式推斷警告。"""
-    s = s.astype(str).str.strip()
-    dt = pd.to_datetime(s, format="%Y/%m/%d", errors="coerce")
-    miss = dt.isna()
-    if miss.any():
-        dt2 = pd.to_datetime(s[miss], format="%Y-%m-%d", errors="coerce")
-        dt.loc[miss] = dt2
-        miss = dt.isna()
-    if miss.any():
-        dt2 = pd.to_datetime(s[miss], errors="coerce")
-        dt.loc[miss] = dt2
-    return dt
-
 
 def detect_model_type(weights_path, device="cpu"):
     """自動偵測模型類型"""
@@ -93,82 +79,6 @@ def detect_model_type(weights_path, device="cpu"):
     dmfm_keys = ["encoder.0.weight", "gat_universe.lin_src.weight", "factor_attn.weight"]
     is_dmfm = any(key in state_dict for key in dmfm_keys)
     return "dmfm" if is_dmfm else "gat"
-
-
-def parse_benchmark(benchmark_csv):
-    """
-    解析基準 CSV 檔案
-    
-    支援欄位：
-    - 日期：['date', 'Date', '年月日']
-    - 價格：['收盤價(元)', 'Close', 'Adj Close', '收盤價']
-    - 日報酬：['報酬率％', 'Return', 'ret', 'pct_change']
-    
-    回傳：DataFrame(index=日期, columns=['ret']) 的日報酬率（小數）
-    """
-    # Git LFS pointer 檔案保護
-    with open(benchmark_csv, "r", encoding="utf-8", errors="ignore") as f:
-        first_line = f.readline().strip()
-    if "git-lfs.github.com/spec" in first_line:
-        raise ValueError("benchmark_csv 是 Git LFS pointer，請先下載真實資料")
-
-    df = pd.read_csv(benchmark_csv)
-    
-    # 日期欄
-    dcol = None
-    for c in ["date", "Date", "年月日"]:
-        if c in df.columns:
-            dcol = c
-            break
-    if dcol is None:
-        dcol = df.columns[0]
-    
-    df[dcol] = parse_datetime_series(df[dcol])
-    df = df.dropna(subset=[dcol]).sort_values(dcol).set_index(dcol)
-
-    # 優先用現成報酬欄
-    for rc in ["報酬率％", "Return", "ret", "pct_change", "RET", "ret1"]:
-        if rc in df.columns:
-            r = pd.to_numeric(df[rc], errors="coerce")
-            if rc == "報酬率％":
-                r = r / 100.0
-            return pd.DataFrame({"ret": r.values}, index=df.index)
-
-    # 否則用收盤價自己算
-    pcol = None
-    for c in ["收盤價(元)", "Close", "Adj Close", "收盤價", "close", "adj_close"]:
-        if c in df.columns:
-            pcol = c
-            break
-    
-    if pcol is None:
-        raise ValueError("benchmark_csv 找不到收盤或報酬欄位")
-    
-    px = pd.to_numeric(df[pcol], errors="coerce")
-    ret = px.pct_change()
-    return pd.DataFrame({"ret": ret.values}, index=df.index)
-
-
-def compound_forward(ret_series: pd.Series, steps: int) -> pd.Series:
-    """
-    將日報酬轉成未來 k 日複利報酬
-    
-    公式：(1+r_t+1) * ... * (1+r_t+k) - 1
-    """
-    if steps <= 1:
-        return ret_series.shift(-1)
-    
-    arr = (1.0 + ret_series.values)
-    out = np.full_like(arr, np.nan, dtype=np.float64)
-    
-    for i in range(0, len(arr) - steps):
-        window = arr[i+1:i+1+steps]
-        if np.any(~np.isfinite(window)):
-            out[i] = np.nan
-        else:
-            out[i] = np.prod(window) - 1.0
-    
-    return pd.Series(out, index=ret_series.index)
 
 
 def load_industry_labels(industry_csv, stocks):
@@ -516,27 +426,32 @@ def build_reports(artifact_dir, weights, out_dir,
     plt.savefig(os.path.join(out_dir, "cum_returns.png"), dpi=150)
     plt.close()
 
-    # 輸出統計
-    def stats(x):
-        x = pd.Series(x).dropna()
-        if x.empty:
-            return dict(n=0, mean=np.nan, std=np.nan, ann=np.nan, sharpe=np.nan, hit=np.nan)
-        freq = 252.0 / float(step)
-        mu = x.mean()
-        sd = x.std(ddof=1)
-        sharpe = (mu / sd * np.sqrt(freq)) if (np.isfinite(sd) and sd > 0) else np.nan
-        return dict(n=len(x), mean=mu, std=sd, ann=mu*freq, sharpe=sharpe, hit=(x>0).mean())
-    
-    s_strat = stats(strat_cmp.values if strat_cmp is not None else strat.values)
-    print(f"\n策略統計: n={s_strat['n']} | 年化={s_strat['ann']:.4f} | 夏普={s_strat['sharpe']:.3f} | 勝率={s_strat['hit']:.3f}")
-    
-    if bmk_cum is not None and bmk_on is not None:
-        s_bmk = stats(bmk_on.values)
-        print(f"基準統計: n={s_bmk['n']} | 年化={s_bmk['ann']:.4f} | 夏普={s_bmk['sharpe']:.3f} | 勝率={s_bmk['hit']:.3f}")
+    strategy_stats = compute_return_stats(strat.values, step)
+    aligned_strategy_stats = compute_return_stats(
+        strat_cmp.values if strat_cmp is not None else [], step
+    )
+    benchmark_stats = (
+        compute_return_stats(bmk_on.values, step)
+        if bmk_cum is not None and bmk_on is not None
+        else None
+    )
+
+    print(
+        f"\n策略統計: n={strategy_stats['n']} | 年化={strategy_stats['annual_return']:.4f} "
+        f"| 夏普={strategy_stats['sharpe']:.3f} | 勝率={strategy_stats['hit_rate']:.3f}"
+    )
+
+    if benchmark_stats is not None:
+        print(
+            f"基準統計: n={benchmark_stats['n']} | 年化={benchmark_stats['annual_return']:.4f} "
+            f"| 夏普={benchmark_stats['sharpe']:.3f} | 勝率={benchmark_stats['hit_rate']:.3f}"
+        )
 
     # ============================================================
     # 圖表 6: 注意力權重熱圖（僅 DMFM）
     # ============================================================
+    top_feature_summary = []
+    attention_plot_path = None
     if model_type == "dmfm" and all_attentions and len(all_attentions) > 0 and len(feature_cols) > 0:
         print("生成圖表 6/6: 注意力權重...")
         
@@ -555,15 +470,75 @@ def build_reports(artifact_dir, weights, out_dir,
         plt.gca().invert_yaxis()
         plt.grid(True, alpha=0.3, axis='x')
         plt.tight_layout()
-        plt.savefig(os.path.join(out_dir, "attention_weights.png"), dpi=150)
+        attention_plot_path = os.path.join(out_dir, "attention_weights.png")
+        plt.savefig(attention_plot_path, dpi=150)
         plt.close()
         
         print(f"\n注意力權重最高的前 5 個特徵：")
         for i, idx in enumerate(top_indices[:5]):
             print(f"  {i+1}. {feature_cols[idx]}: {attn_avg[idx]:.6f}")
+            top_feature_summary.append(
+                {
+                    "rank": i + 1,
+                    "feature": feature_cols[idx],
+                    "attention_weight": float(attn_avg[idx]),
+                }
+            )
+
+    summary_dir = infer_summary_dir(out_dir)
+    plot_paths = {
+        "daily_ic": os.path.join(out_dir, "daily_ic.png"),
+        "pred_dispersion": os.path.join(out_dir, "pred_dispersion.png"),
+        "hitrate_by_month": os.path.join(out_dir, "hitrate_by_month.png"),
+        "ic_distribution": os.path.join(out_dir, "ic_distribution.png"),
+        "cum_returns": os.path.join(out_dir, "cum_returns.png"),
+        "attention_weights": attention_plot_path,
+    }
+    alignment = None
+    if strat_cmp is not None and bmk_on is not None and len(strat_cmp) > 0:
+        alignment = {
+            "start": str(strat_cmp.index.min().date()),
+            "end": str(strat_cmp.index.max().date()),
+            "n_periods": int(len(strat_cmp)),
+        }
+    portfolio_payload = {
+        "model_type": model_type,
+        "artifact_dir": artifact_dir,
+        "weights": weights,
+        "plots_dir": out_dir,
+        "plots": plot_paths,
+        "benchmark_path": benchmark_csv,
+        "top_pct": float(top_pct),
+        "rebalance_days": int(rebalance_days),
+        "horizon": int(horizon_k),
+        "split": {
+            "train_ratio": train_ratio,
+            "val_ratio": val_ratio,
+            "val_days": len(val_idx),
+            "test_days": len(test_idx),
+        },
+        "strategy": strategy_stats,
+        "strategy_aligned": aligned_strategy_stats if strat_cmp is not None else None,
+        "benchmark": benchmark_stats,
+        "alignment": alignment,
+        "top_attention_features": top_feature_summary,
+    }
+    if benchmark_stats is not None and strat_cmp is not None:
+        compare_stats = aligned_strategy_stats
+        portfolio_payload["excess"] = {
+            "annual_return": compare_stats["annual_return"] - benchmark_stats["annual_return"],
+            "total_return": compare_stats["total_return"] - benchmark_stats["total_return"],
+            "sharpe": (
+                compare_stats["sharpe"] - benchmark_stats["sharpe"]
+                if compare_stats["sharpe"] is not None and benchmark_stats["sharpe"] is not None
+                else None
+            ),
+        }
+    save_json(summary_dir / "portfolio.json", portfolio_payload)
     
     print("\n" + "=" * 60)
     print(f"所有圖表已儲存至: {out_dir}")
+    print(f"投組摘要已儲存至: {summary_dir / 'portfolio.json'}")
     print("=" * 60)
 
 

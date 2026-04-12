@@ -21,8 +21,16 @@ import numpy as np
 import pandas as pd
 import torch
 
+from report_utils import (
+    compound_forward,
+    compute_return_stats,
+    infer_summary_dir,
+    parse_benchmark,
+    parse_dates_list,
+    save_json,
+)
 from train_baselines import LSTMRegressor, pick_device, safe_corr
-from train_gat_fixed import load_artifacts, time_split_indices
+from train_gat_fixed import load_artifacts, time_split_indices_3
 
 matplotlib.use("Agg")
 
@@ -37,77 +45,6 @@ class EvalMetrics:
     daily_ic: float
     icir: float
     dir_acc: float
-
-
-def parse_dates_list(str_dates: List[str]) -> List[pd.Timestamp]:
-    return pd.to_datetime(pd.Series(str_dates), errors="coerce").tolist()
-
-def parse_datetime_series(s: pd.Series) -> pd.Series:
-    s = s.astype(str).str.strip()
-    dt = pd.to_datetime(s, format="%Y/%m/%d", errors="coerce")
-    miss = dt.isna()
-    if miss.any():
-        dt2 = pd.to_datetime(s[miss], format="%Y-%m-%d", errors="coerce")
-        dt.loc[miss] = dt2
-        miss = dt.isna()
-    if miss.any():
-        dt2 = pd.to_datetime(s[miss], errors="coerce")
-        dt.loc[miss] = dt2
-    return dt
-
-
-def parse_benchmark(benchmark_csv: str) -> pd.DataFrame:
-    with open(benchmark_csv, "r", encoding="utf-8", errors="ignore") as f:
-        first_line = f.readline().strip()
-    if "git-lfs.github.com/spec" in first_line:
-        raise ValueError("benchmark_csv is a Git LFS pointer; fetch real data first")
-
-    df = pd.read_csv(benchmark_csv)
-
-    dcol = None
-    for c in ["date", "Date", "年月日"]:
-        if c in df.columns:
-            dcol = c
-            break
-    if dcol is None:
-        dcol = df.columns[0]
-
-    df[dcol] = parse_datetime_series(df[dcol])
-    df = df.dropna(subset=[dcol]).sort_values(dcol).set_index(dcol)
-
-    for rc in ["報酬率％", "Return", "ret", "pct_change", "RET", "ret1"]:
-        if rc in df.columns:
-            r = pd.to_numeric(df[rc], errors="coerce")
-            if rc == "報酬率％":
-                r = r / 100.0
-            return pd.DataFrame({"ret": r.values}, index=df.index)
-
-    pcol = None
-    for c in ["收盤價(元)", "Close", "Adj Close", "收盤價", "close", "adj_close"]:
-        if c in df.columns:
-            pcol = c
-            break
-    if pcol is None:
-        raise ValueError("benchmark_csv: cannot find price or return column")
-
-    px = pd.to_numeric(df[pcol], errors="coerce")
-    ret = px.pct_change()
-    return pd.DataFrame({"ret": ret.values}, index=df.index)
-
-
-def compound_forward(ret_series: pd.Series, steps: int) -> pd.Series:
-    if steps <= 1:
-        return ret_series.shift(-1)
-
-    arr = 1.0 + ret_series.values
-    out = np.full_like(arr, np.nan, dtype=np.float64)
-    for i in range(0, len(arr) - steps):
-        window = arr[i + 1 : i + 1 + steps]
-        if np.any(~np.isfinite(window)):
-            out[i] = np.nan
-        else:
-            out[i] = np.prod(window) - 1.0
-    return pd.Series(out, index=ret_series.index)
 
 
 def compute_metrics(
@@ -164,6 +101,22 @@ def load_linear_or_xgboost(artifact_dir: str, model_name: str):
         return model, scaler
 
     raise ValueError(f"Unsupported non-LSTM model: {model_name}")
+
+
+def resolve_model_artifacts(artifact_dir: str, model_name: str) -> Tuple[str, Optional[str]]:
+    if model_name == "linear":
+        return (
+            os.path.join(artifact_dir, "baseline_linear.pkl"),
+            os.path.join(artifact_dir, "baseline_linear_scaler.pkl"),
+        )
+    if model_name == "xgboost":
+        return (
+            os.path.join(artifact_dir, "baseline_xgboost.json"),
+            os.path.join(artifact_dir, "baseline_xgboost_scaler.pkl"),
+        )
+    if model_name == "lstm":
+        return (os.path.join(artifact_dir, "baseline_lstm.pt"), None)
+    raise ValueError(f"Unsupported baseline model: {model_name}")
 
 
 def infer_lstm_lookback(artifact_dir: str, fallback: int) -> int:
@@ -229,6 +182,7 @@ def evaluate_and_plot(
     hidden_dim: int,
     dropout: float,
     train_ratio: float,
+    val_ratio: float,
 ) -> Dict[str, object]:
     os.makedirs(out_dir, exist_ok=True)
 
@@ -246,13 +200,16 @@ def evaluate_and_plot(
     else:
         print("[warn] yraw_tensor.pt not found; backtest uses demeaned yt")
     dates = parse_dates_list(meta["dates"])
-    _, test_idx = time_split_indices(meta["dates"], train_ratio=train_ratio)
+    _, val_idx, test_idx = time_split_indices_3(
+        meta["dates"], train_ratio=train_ratio, val_ratio=val_ratio
+    )
     horizon_k = int(meta.get("horizon", rebalance_days))
 
     print("=" * 60)
     print(f"Baseline evaluate: {model_name}")
     print(f"Artifact dir: {artifact_dir}")
     print(f"Output dir: {out_dir}")
+    print(f"Validation days: {len(val_idx)}")
     print(f"Test days: {len(test_idx)}")
     print("=" * 60)
 
@@ -260,12 +217,14 @@ def evaluate_and_plot(
     scaler = None
     lstm_lookback = None
 
+    weights_path, scaler_path = resolve_model_artifacts(artifact_dir, model_name)
+
     if model_name in {"linear", "xgboost"}:
         model, scaler = load_linear_or_xgboost(artifact_dir, model_name)
     elif model_name == "lstm":
         lstm_lookback = infer_lstm_lookback(artifact_dir, fallback=lookback or 5)
         model = LSTMRegressor(input_dim=ft.shape[-1], hidden_dim=hidden_dim, dropout=dropout).to(device)
-        state = torch.load(os.path.join(artifact_dir, "baseline_lstm.pt"), map_location=device)
+        state = torch.load(weights_path, map_location=device)
         model.load_state_dict(state)
         model.eval()
     else:
@@ -452,29 +411,78 @@ def evaluate_and_plot(
     plt.savefig(os.path.join(out_dir, "cum_returns.png"), dpi=150)
     plt.close()
 
-    # ---- Save metrics ----
-    with open(os.path.join(out_dir, "metrics.json"), "w", encoding="utf-8") as f:
-        json.dump(metrics_dict, f, ensure_ascii=False, indent=2)
+    strategy_stats = compute_return_stats(strat.values, step)
+    aligned_strategy_stats = compute_return_stats(
+        strat_cmp.values if strat_cmp is not None else [], step
+    )
+    benchmark_stats = (
+        compute_return_stats(bmk_on.values, step)
+        if bmk_cum is not None and bmk_on is not None
+        else None
+    )
 
-    with open(os.path.join(out_dir, "metrics.txt"), "w", encoding="utf-8") as f:
-        f.write(f"Model: {model_name}\n")
-        f.write(f"Samples: {metrics.n}\n")
-        f.write(f"MSE: {metrics.mse:.6f}\n")
-        f.write(f"RMSE: {metrics.rmse:.6f}\n")
-        f.write(f"MAE: {metrics.mae:.6f}\n")
-        f.write(f"IC: {metrics.ic:.6f}\n")
-        f.write(f"DailyIC: {metrics.daily_ic:.6f}\n")
-        f.write(f"ICIR: {metrics.icir:.6f}\n")
-        f.write(f"DirAcc: {metrics.dir_acc:.6f}\n")
+    summary_dir = infer_summary_dir(out_dir)
+    plot_paths = {
+        "daily_ic": os.path.join(out_dir, "daily_ic.png"),
+        "pred_dispersion": os.path.join(out_dir, "pred_dispersion.png"),
+        "hitrate_by_month": os.path.join(out_dir, "hitrate_by_month.png"),
+        "ic_distribution": os.path.join(out_dir, "ic_distribution.png"),
+        "cum_returns": os.path.join(out_dir, "cum_returns.png"),
+        "attention_weights": None,
+    }
+    portfolio_payload = {
+        "model_type": model_name,
+        "artifact_dir": artifact_dir,
+        "weights": weights_path,
+        "scaler": scaler_path,
+        "plots_dir": out_dir,
+        "plots": plot_paths,
+        "benchmark_path": benchmark_csv,
+        "top_pct": float(top_pct),
+        "rebalance_days": int(rebalance_days),
+        "horizon": int(horizon_k),
+        "split": {
+            "train_ratio": train_ratio,
+            "val_ratio": val_ratio,
+            "val_days": len(val_idx),
+            "test_days": len(test_idx),
+        },
+        "strategy": strategy_stats,
+        "strategy_aligned": aligned_strategy_stats if strat_cmp is not None else None,
+        "benchmark": benchmark_stats,
+        "alignment": (
+            {
+                "start": str(strat_cmp.index.min().date()),
+                "end": str(strat_cmp.index.max().date()),
+                "n_periods": int(len(strat_cmp)),
+            }
+            if strat_cmp is not None and len(strat_cmp) > 0
+            else None
+        ),
+        "top_attention_features": [],
+        "lstm_lookback": lstm_lookback,
+    }
+    if benchmark_stats is not None and strat_cmp is not None:
+        portfolio_payload["excess"] = {
+            "annual_return": aligned_strategy_stats["annual_return"] - benchmark_stats["annual_return"],
+            "total_return": aligned_strategy_stats["total_return"] - benchmark_stats["total_return"],
+            "sharpe": (
+                aligned_strategy_stats["sharpe"] - benchmark_stats["sharpe"]
+                if aligned_strategy_stats["sharpe"] is not None and benchmark_stats["sharpe"] is not None
+                else None
+            ),
+        }
+
+    save_json(summary_dir / "portfolio.json", portfolio_payload)
 
     print("=" * 60)
     print(f"Done baseline evaluate: {model_name}")
-    print(f"Metrics: {os.path.join(out_dir, 'metrics.json')}")
+    print(f"Portfolio: {summary_dir / 'portfolio.json'}")
     print(f"Plots: {out_dir}")
     print("=" * 60)
 
     return {
-        "model": model_name,
+        "model_type": model_name,
         "artifact_dir": artifact_dir,
         "out_dir": out_dir,
         "metrics": metrics_dict,
@@ -495,6 +503,7 @@ def parse_args():
     ap.add_argument("--hidden_dim", type=int, default=64, help="LSTM hidden dim")
     ap.add_argument("--dropout", type=float, default=0.1, help="LSTM dropout")
     ap.add_argument("--train_ratio", type=float, default=0.8, help="Train split ratio")
+    ap.add_argument("--val_ratio", type=float, default=0.1, help="Validation split ratio within train")
     return ap.parse_args()
 
 
@@ -513,6 +522,7 @@ def main():
         hidden_dim=args.hidden_dim,
         dropout=args.dropout,
         train_ratio=args.train_ratio,
+        val_ratio=args.val_ratio,
     )
 
 
