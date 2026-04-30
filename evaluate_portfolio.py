@@ -33,7 +33,7 @@ import matplotlib
 matplotlib.use('Agg')  # 使用非互動式後端
 
 from checkpoint_utils import build_graph_model_from_checkpoint, detect_checkpoint_model_type
-from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
+from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, FactorGraphAblation, GATRegressor
 from report_utils import (
     compound_forward,
     compute_return_stats,
@@ -77,9 +77,19 @@ def safe_corr(a, b):
 def detect_model_type(weights_path, device="cpu"):
     """自動偵測模型類型"""
     model_type = detect_checkpoint_model_type(weights_path, map_location=device)
-    if model_type not in {"dmfm", "gat"}:
+    if model_type not in {"dmfm", "gat", "factor_variant"}:
         raise ValueError(f"無法辨識模型類型: {weights_path}")
     return model_type
+
+
+def forward_graph_model(model, x, edge_industry, edge_universe):
+    out = model(x, edge_industry, edge_universe)
+    if isinstance(out, tuple):
+        pred = out[0]
+        attn_weights = out[1] if len(out) > 1 else None
+        contexts = out[2] if len(out) > 2 else None
+        return pred, attn_weights, contexts
+    return out, None, None
 
 
 def load_industry_labels(industry_csv, stocks):
@@ -199,8 +209,8 @@ def build_reports(artifact_dir, weights, out_dir,
         f"Checkpoint: model_type={checkpoint['model_type']} "
         f"format_version={checkpoint['format_version']} legacy={checkpoint['is_legacy']}"
     )
-    if model_type == "dmfm" and (missing or unexpected):
-        print(f"[warn] DMFM 權重鍵不完全匹配 (missing={len(missing)}, unexpected={len(unexpected)})")
+    if model_type in {"dmfm", "factor_variant"} and (missing or unexpected):
+        print(f"[warn] 權重鍵不完全匹配 (missing={len(missing)}, unexpected={len(unexpected)})")
     model.eval()
 
     # 收集測試期數據
@@ -211,7 +221,7 @@ def build_reports(artifact_dir, weights, out_dir,
     test_dates = []
     all_predictions = []
     all_labels = []
-    all_attentions = [] if model_type == "dmfm" else None
+    all_attentions = [] if model_type in {"dmfm", "factor_variant"} else None
     
     with torch.no_grad():
         for t in test_idx:
@@ -229,13 +239,9 @@ def build_reports(artifact_dir, weights, out_dir,
             x = torch.nan_to_num(x, nan=0.0)
 
             # 前向傳播
-            if model_type == "dmfm":
-                p, attn_weights, contexts = model(x, edge_industry, edge_universe)
-                # attn_weights 是 [N, F] 的張量
-                if attn_weights is not None and all_attentions is not None:
-                    all_attentions.append(attn_weights[mask].detach().cpu().numpy())
-            else:
-                p = model(x, edge_industry)
+            p, attn_weights, contexts = forward_graph_model(model, x, edge_industry, edge_universe)
+            if attn_weights is not None and all_attentions is not None:
+                all_attentions.append(attn_weights[mask].detach().cpu().numpy())
 
             P = p[mask].detach().cpu().numpy().flatten()  # ← 加 .flatten()
             Y = y[mask].detach().cpu().numpy().flatten()  # ← 加 .flatten()
@@ -340,10 +346,7 @@ def build_reports(artifact_dir, weights, out_dir,
             
             x = torch.nan_to_num(x, nan=0.0)
             
-            if model_type == "dmfm":
-                p, _, _ = model(x, edge_industry, edge_universe)
-            else:
-                p = model(x, edge_industry)
+            p, _, _ = forward_graph_model(model, x, edge_industry, edge_universe)
             
             # ✅ 修正：統一加 flatten()
             P = p[mask].detach().cpu().numpy().flatten()
@@ -447,7 +450,7 @@ def build_reports(artifact_dir, weights, out_dir,
     # ============================================================
     top_feature_summary = []
     attention_plot_path = None
-    if model_type == "dmfm" and all_attentions and len(all_attentions) > 0 and len(feature_cols) > 0:
+    if model_type in {"dmfm", "factor_variant"} and all_attentions and len(all_attentions) > 0 and len(feature_cols) > 0:
         print("生成圖表 6/6: 注意力權重...")
         
         # 平均所有測試期的注意力權重

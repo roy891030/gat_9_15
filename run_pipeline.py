@@ -26,6 +26,16 @@ WINDOW_SPECS: Dict[str, Dict[str, str]] = {
     "long": {"start": "2019-09-16", "end": "2025-09-12"},
 }
 
+FACTOR_MODELS = [
+    "mlp",
+    "gat_industry",
+    "gat_universe",
+    "gat_two_graph_no_neutral",
+    "dmfm_ind_neutral",
+    "dmfm_full",
+]
+DEFAULT_MODELS = ["baseline", *FACTOR_MODELS]
+
 
 @dataclass
 class GATConfig:
@@ -109,6 +119,34 @@ def parse_csv_list(raw: str, allowed: Sequence[str], allow_all: bool = True) -> 
         if p not in seen:
             seen.add(p)
             out.append(p)
+    return out
+
+
+def parse_model_list(raw: str) -> List[str]:
+    parts = [x.strip().lower() for x in raw.split(",") if x.strip()]
+    if not parts:
+        raise ValueError("empty model selection")
+    if "all" in parts:
+        return list(DEFAULT_MODELS)
+
+    expanded = []
+    for part in parts:
+        if part == "factor_variants":
+            expanded.extend(FACTOR_MODELS)
+        else:
+            expanded.append(part)
+
+    allowed = ["baseline", "gat", "dmfm", "factor_variants", *FACTOR_MODELS]
+    invalid = [x for x in expanded if x not in allowed or x == "factor_variants"]
+    if invalid:
+        raise ValueError(f"invalid models: {invalid}, allowed={allowed + ['all']}")
+
+    seen = set()
+    out = []
+    for model in expanded:
+        if model not in seen:
+            seen.add(model)
+            out.append(model)
     return out
 
 
@@ -509,16 +547,121 @@ def run_dmfm(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, 
     )
 
 
+def run_factor_variant(py: str, window: str, artifact_dir: Path, variant: str, args, summary: Dict[str, object]):
+    out_dir = Path(args.output_root) / window / variant
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    cfg = SMOKE_DMFM if args.mode == "smoke" else FULL_DMFM_BY_WINDOW[window]
+
+    if not args.skip_train:
+        cmd_train = [
+            py,
+            "train_factor_variants.py",
+            "--artifact_dir",
+            str(artifact_dir),
+            "--variant",
+            variant,
+            "--epochs",
+            str(cfg.epochs),
+            "--lr",
+            str(cfg.lr),
+            "--device",
+            args.device,
+            "--hidden_dim",
+            str(cfg.hidden_dim),
+            "--heads",
+            str(cfg.heads),
+            "--dropout",
+            str(cfg.dropout),
+            "--lambda_attn",
+            str(cfg.lambda_attn),
+            "--lambda_ic",
+            str(cfg.lambda_ic),
+            "--patience",
+            str(cfg.patience),
+            "--train_ratio",
+            str(args.train_ratio),
+            "--val_ratio",
+            str(args.val_ratio),
+        ]
+        run_cmd(cmd_train, log_path=out_dir / "train.log", dry_run=args.dry_run)
+    else:
+        print(f"[skip-train] {variant} {window}")
+
+    weight = artifact_dir / f"{variant}_best.pt"
+    cmd_metrics = [
+        py,
+        "evaluate_metrics.py",
+        "--artifact_dir",
+        str(artifact_dir),
+        "--weights",
+        str(weight),
+        "--device",
+        args.device,
+        "--industry_csv",
+        args.industry_csv,
+        "--train_ratio",
+        str(args.train_ratio),
+        "--val_ratio",
+        str(args.val_ratio),
+        "--out_json",
+        str(out_dir / "metrics.json"),
+    ]
+    run_cmd(cmd_metrics, log_path=out_dir / "metrics.log", dry_run=args.dry_run)
+
+    cmd_backtest = [
+        py,
+        "evaluate_portfolio.py",
+        "--artifact_dir",
+        str(artifact_dir),
+        "--weights",
+        str(weight),
+        "--out_dir",
+        str(out_dir / "plots"),
+        "--benchmark_csv",
+        args.benchmark_csv,
+        "--top_pct",
+        str(args.top_pct),
+        "--rebalance_days",
+        str(args.rebalance_days),
+        "--device",
+        args.device,
+        "--industry_csv",
+        args.industry_csv,
+        "--train_ratio",
+        str(args.train_ratio),
+        "--val_ratio",
+        str(args.val_ratio),
+    ]
+    run_cmd(cmd_backtest, log_path=out_dir / "backtest.log", dry_run=args.dry_run)
+
+    summary["runs"].append(
+        {
+            "window": window,
+            "model": variant,
+            "artifact_dir": str(artifact_dir),
+            "output_dir": str(out_dir),
+            "metrics_json": str(out_dir / "metrics.json"),
+            "portfolio_json": str(out_dir / "portfolio.json"),
+            "plots_dir": str(out_dir / "plots"),
+        }
+    )
+
+
 def parse_args():
     ap = argparse.ArgumentParser(description="Unified experiment pipeline")
     ap.add_argument(
         "--models",
         default="all",
-        help="comma list: baseline,gat,dmfm,all",
+        help=(
+            "comma list: baseline,gat,dmfm,factor_variants,"
+            "mlp,gat_industry,gat_universe,gat_two_graph_no_neutral,"
+            "dmfm_ind_neutral,dmfm_full,all"
+        ),
     )
     ap.add_argument(
         "--baseline_models",
-        default="linear",
+        default="linear,xgboost,lstm",
         help="comma list when baseline is selected: linear,xgboost,lstm",
     )
     ap.add_argument(
@@ -552,7 +695,7 @@ def main():
     os.chdir(repo_root)
 
     py = sys.executable
-    models = parse_csv_list(args.models, ["baseline", "gat", "dmfm"])
+    models = parse_model_list(args.models)
     windows = parse_csv_list(args.windows, ["short", "medium", "long"])
     baseline_models = parse_csv_list(args.baseline_models, ["linear", "xgboost", "lstm"])
 
@@ -598,6 +741,10 @@ def main():
 
         if "dmfm" in models:
             run_dmfm(py, window, artifact_dir, args, summary)
+
+        for variant in FACTOR_MODELS:
+            if variant in models:
+                run_factor_variant(py, window, artifact_dir, variant, args, summary)
 
     summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
     summary_path = output_root / "run_summary.json"

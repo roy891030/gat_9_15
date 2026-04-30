@@ -4,14 +4,15 @@
 
 ## 主要入口
 
-- `run_pipeline.py`: 統一跑 `baseline / gat / dmfm`
+- `run_pipeline.py`: 統一跑 `baseline` 與 factor ablation models
 - `run_all_models.sh`: full run 包裝器
 - `post_process_all.sh`: 只做評估、回測與圖表
 
 ## 核心腳本
 
 - `build_artifacts.py`: 建立 `artifacts/<window>/`
-- `train_dmfm_wei2022.py`: 訓練 DMFM
+- `train_dmfm_wei2022.py`: 訓練舊版完整 DMFM
+- `train_factor_variants.py`: 訓練 `mlp / gat_industry / gat_universe / gat_two_graph_no_neutral / dmfm_ind_neutral / dmfm_full`
 - `train_gat_fixed.py`: 訓練 GAT
 - `train_baselines.py`: 訓練 `linear / xgboost / lstm`
 - `evaluate_metrics.py`: 輸出 train / val / test 指標
@@ -27,7 +28,6 @@
 ```bash
 .venv/bin/python run_pipeline.py \
   --models all \
-  --baseline_models linear,xgboost,lstm \
   --windows all \
   --mode full \
   --device cuda
@@ -38,10 +38,31 @@
 ```bash
 .venv/bin/python run_pipeline.py \
   --models all \
-  --baseline_models linear,xgboost,lstm \
   --windows all \
   --mode smoke \
   --device cpu
+```
+
+只跑六個 factor ablation models：
+
+```bash
+.venv/bin/python run_pipeline.py \
+  --models factor_variants \
+  --windows all \
+  --mode smoke \
+  --device cuda \
+  --output_root runs_factor_smoke
+```
+
+只跑指定模型與指定時間窗：
+
+```bash
+.venv/bin/python run_pipeline.py \
+  --models mlp,gat_industry,gat_universe,gat_two_graph_no_neutral,dmfm_ind_neutral,dmfm_full \
+  --windows short,medium,long \
+  --mode full \
+  --device cuda \
+  --output_root runs_factor_full
 ```
 
 只做後處理：
@@ -54,6 +75,8 @@ bash post_process_all.sh --device cuda --output_root runs_gpu_full
 
 - `artifacts/<window>/`: 特徵、標籤、圖結構、模型權重
 - `runs*/<window>/<model>/`: `train.log`、`metrics.json`、`portfolio.json`、`plots/`
+- `--models all`: 預設跑 `baseline_linear / baseline_xgboost / baseline_lstm` 加上六個 factor ablation models
+- 舊版 `gat` 與 `dmfm` 仍可用 `--models gat` 或 `--models dmfm` 單獨執行
 
 ## 主要評估口徑
 

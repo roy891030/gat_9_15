@@ -23,7 +23,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATConv
 
-__all__ = ['DMFM_Wei2022', 'DMFM_Lite', 'GATRegressor']
+FACTOR_VARIANTS = (
+    "mlp",
+    "gat_industry",
+    "gat_universe",
+    "gat_two_graph_no_neutral",
+    "dmfm_ind_neutral",
+    "dmfm_full",
+)
+
+__all__ = ['DMFM_Wei2022', 'DMFM_Lite', 'GATRegressor', 'FactorGraphAblation', 'FACTOR_VARIANTS']
 
 
 class DMFM_Wei2022(nn.Module):
@@ -310,6 +319,184 @@ class DMFM_Lite(nn.Module):
         contexts = {'C': C, 'C_I': C_I, 'C_U': C_U, 'H_I': H_I, 'H_U': H_U}
 
         return deep_factor, attn_weights, contexts
+
+
+class FactorGraphAblation(nn.Module):
+    """
+    Controlled ablation family for comparing MLP, GAT baselines, and DMFM neutralization.
+
+    Variants:
+    - mlp: C
+    - gat_industry: [C || H_I]
+    - gat_universe: [C || H_U]
+    - gat_two_graph_no_neutral: [C || H_I || H_U]
+    - dmfm_ind_neutral: [C || C - H_I]
+    - dmfm_full: [C || C - H_I || C - H_I - H_U]
+    """
+
+    def __init__(self,
+                 num_features: int = None,
+                 in_dim: int = None,
+                 hidden_dim: int = 64,
+                 heads: int = 2,
+                 dropout: float = 0.1,
+                 variant: str = "dmfm_full",
+                 use_factor_attention: bool = True):
+        super().__init__()
+        if in_dim is not None:
+            self.num_features = in_dim
+        elif num_features is not None:
+            self.num_features = num_features
+        else:
+            raise ValueError("Must provide either num_features or in_dim")
+        if variant not in FACTOR_VARIANTS:
+            raise ValueError(f"Unknown factor variant: {variant}")
+
+        self.hidden_dim = hidden_dim
+        self.heads = heads
+        self.variant = variant
+        self.use_factor_attention = use_factor_attention
+
+        self.batch_norm = nn.BatchNorm1d(self.num_features)
+        self.encoder = nn.Sequential(
+            nn.Linear(self.num_features, hidden_dim * 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU()
+        )
+
+        self.gat_industry = GATConv(
+            hidden_dim,
+            hidden_dim,
+            heads=heads,
+            concat=False,
+            dropout=dropout,
+            add_self_loops=True,
+        )
+        self.gat_universe = GATConv(
+            hidden_dim,
+            hidden_dim,
+            heads=heads,
+            concat=False,
+            dropout=dropout,
+            add_self_loops=True,
+        )
+        self._freeze_unused_graph_layers()
+
+        decoder_in = {
+            "mlp": hidden_dim,
+            "gat_industry": hidden_dim * 2,
+            "gat_universe": hidden_dim * 2,
+            "gat_two_graph_no_neutral": hidden_dim * 3,
+            "dmfm_ind_neutral": hidden_dim * 2,
+            "dmfm_full": hidden_dim * 3,
+        }[variant]
+        self.factor_decoder = nn.Sequential(
+            nn.Linear(decoder_in, hidden_dim),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+        )
+
+        if use_factor_attention:
+            self.factor_attention = nn.Linear(self.num_features, self.num_features)
+            self.attn_factor_head = nn.Sequential(
+                nn.Linear(self.num_features, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, 1),
+            )
+
+    def _freeze_unused_graph_layers(self):
+        uses_industry = self.variant in {
+            "gat_industry",
+            "gat_two_graph_no_neutral",
+            "dmfm_ind_neutral",
+            "dmfm_full",
+        }
+        uses_universe = self.variant in {
+            "gat_universe",
+            "gat_two_graph_no_neutral",
+            "dmfm_full",
+        }
+        if not uses_industry:
+            for param in self.gat_industry.parameters():
+                param.requires_grad = False
+        if not uses_universe:
+            for param in self.gat_universe.parameters():
+                param.requires_grad = False
+
+    def forward(self, x, industry_edge_index, universe_edge_index):
+        x_norm = self.batch_norm(x)
+        C = self.encoder(x_norm)
+
+        H_I = None
+        H_U = None
+        C_I = None
+        C_U = None
+
+        if self.variant == "mlp":
+            features = C
+
+        elif self.variant == "gat_industry":
+            H_I = F.elu(self.gat_industry(C, industry_edge_index))
+            features = torch.cat([C, H_I], dim=-1)
+
+        elif self.variant == "gat_universe":
+            H_U = F.elu(self.gat_universe(C, universe_edge_index))
+            features = torch.cat([C, H_U], dim=-1)
+
+        elif self.variant == "gat_two_graph_no_neutral":
+            H_I = F.elu(self.gat_industry(C, industry_edge_index))
+            H_U = F.elu(self.gat_universe(C, universe_edge_index))
+            features = torch.cat([C, H_I, H_U], dim=-1)
+
+        elif self.variant == "dmfm_ind_neutral":
+            H_I = F.elu(self.gat_industry(C, industry_edge_index))
+            C_I = C - H_I
+            features = torch.cat([C, C_I], dim=-1)
+
+        elif self.variant == "dmfm_full":
+            H_I = F.elu(self.gat_industry(C, industry_edge_index))
+            C_I = C - H_I
+            H_U = F.elu(self.gat_universe(C_I, universe_edge_index))
+            C_U = C_I - H_U
+            features = torch.cat([C, C_I, C_U], dim=-1)
+
+        else:
+            raise RuntimeError(f"Unhandled factor variant: {self.variant}")
+
+        deep_factor = self.factor_decoder(features)
+
+        if self.use_factor_attention:
+            U = F.leaky_relu(self.factor_attention(x_norm), negative_slope=0.2)
+            attn_weights = F.softmax(U, dim=-1)
+        else:
+            attn_weights = None
+
+        contexts = {
+            "x_norm": x_norm,
+            "C": C,
+            "H_I": H_I,
+            "H_U": H_U,
+            "C_I": C_I,
+            "C_U": C_U,
+            "features": features,
+            "variant": self.variant,
+        }
+        return deep_factor, attn_weights, contexts
+
+    def interpret_factor(self, x, attn_weights, x_norm=None):
+        if attn_weights is None:
+            return None
+        x_ref = x_norm if x_norm is not None else x
+        return self.attn_factor_head(x_ref * attn_weights)
+
+    def get_attention_importance(self, x, attn_weights):
+        if attn_weights is None:
+            return None
+        return attn_weights.mean(dim=0)
 
 
 class GATRegressor(nn.Module):

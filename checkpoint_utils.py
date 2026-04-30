@@ -3,7 +3,7 @@ from typing import Any, Mapping
 
 import torch
 
-from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
+from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, FactorGraphAblation, GATRegressor
 
 
 CHECKPOINT_FORMAT = "explicit_v1"
@@ -129,6 +129,18 @@ def build_graph_model_from_checkpoint(
             hidden_dim=int(config.get("hidden_dim", fallback_hid)),
             heads=int(config.get("heads", fallback_heads)),
             dropout=float(config.get("dropout", fallback_dropout)),
+            use_factor_attention=bool(config.get("use_factor_attention", True)),
+        )
+        missing, unexpected = model.load_state_dict(payload["state_dict"], strict=False)
+        return model, payload, missing, unexpected
+
+    if model_type == "factor_variant":
+        model = FactorGraphAblation(
+            in_dim=in_dim,
+            hidden_dim=int(config.get("hidden_dim", fallback_hid)),
+            heads=int(config.get("heads", fallback_heads)),
+            dropout=float(config.get("dropout", fallback_dropout)),
+            variant=str(config.get("variant", "dmfm_full")),
             use_factor_attention=bool(config.get("use_factor_attention", True)),
         )
         missing, unexpected = model.load_state_dict(payload["state_dict"], strict=False)

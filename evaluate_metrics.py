@@ -22,7 +22,7 @@ import torch
 import pandas as pd
 
 from checkpoint_utils import build_graph_model_from_checkpoint, detect_checkpoint_model_type
-from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
+from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, FactorGraphAblation, GATRegressor
 from report_utils import save_json
 from train_gat_fixed import load_artifacts, time_split_indices_3
 
@@ -131,7 +131,20 @@ def detect_model_type(weights_path, in_dim, device="cpu"):
     if model_type == "gat":
         print("偵測到 GATRegressor 模型")
         return "gat"
+    if model_type == "factor_variant":
+        print("偵測到 FactorGraphAblation 模型")
+        return "factor_variant"
     raise ValueError(f"無法辨識模型類型: {weights_path}")
+
+
+def forward_graph_model(model, x, edge_industry, edge_universe):
+    out = model(x, edge_industry, edge_universe)
+    if isinstance(out, tuple):
+        pred = out[0]
+        attn_weights = out[1] if len(out) > 1 else None
+        contexts = out[2] if len(out) > 2 else None
+        return pred, attn_weights, contexts
+    return out, None, None
 
 
 @torch.no_grad()
@@ -172,12 +185,11 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
 
         x = torch.nan_to_num(x, nan=0.0)
 
-        if isinstance(model, DMFM):
-            p, attn_weights, contexts = model(x, edge_industry.to(device), edge_universe.to(device))
-            if attn_weights is not None:
-                all_attentions.append(attn_weights[mask].detach().cpu().numpy())
-        else:
-            p = model(x, edge_industry.to(device))
+        p, attn_weights, contexts = forward_graph_model(
+            model, x, edge_industry.to(device), edge_universe.to(device)
+        )
+        if attn_weights is not None:
+            all_attentions.append(attn_weights[mask].detach().cpu().numpy())
 
         p = p[mask]
         yy = y[mask]
@@ -349,8 +361,8 @@ def main():
     )
     model_type = checkpoint["model_type"]
     model = model.to(device)
-    if model_type == "dmfm" and (missing or unexpected):
-        print(f"[warn] DMFM 權重鍵不完全匹配 (missing={len(missing)}, unexpected={len(unexpected)})")
+    if model_type in {"dmfm", "factor_variant"} and (missing or unexpected):
+        print(f"[warn] 權重鍵不完全匹配 (missing={len(missing)}, unexpected={len(unexpected)})")
 
     stocks = meta.get("stocks", [str(i) for i in range(N)])
     inds = load_industry_labels(args.industry_csv, stocks)

@@ -10,7 +10,6 @@ fi
 # 與 run_all_models.sh 同流程；保留檔名供舊習慣使用。
 "$PYTHON_BIN" run_pipeline.py \
   --models all \
-  --baseline_models linear,xgboost,lstm \
   --windows all \
   --mode full \
   "$@"
