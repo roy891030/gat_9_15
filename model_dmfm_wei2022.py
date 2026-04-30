@@ -315,7 +315,8 @@ class DMFM_Lite(nn.Module):
 class GATRegressor(nn.Module):
     """
     簡化版 GAT 模型（向後相容）
-    - 兩層 GAT + 線性輸出
+    - 預設單層 GAT + 線性輸出
+    - 可載入舊版雙層 GAT checkpoint
     - 僅使用單一圖結構（產業圖）
     
     修正版（2025-12-15）：
@@ -323,16 +324,25 @@ class GATRegressor(nn.Module):
     - 輸出層小初始化防止梯度爆炸
     - tanh_cap 預設 1.0（溫和限制）
     """
-    def __init__(self, in_dim, hid=64, heads=2, dropout=0.1, tanh_cap=1.0):
+    def __init__(self, in_dim, hid=64, heads=2, dropout=0.1, tanh_cap=1.0, num_layers=1):
         super().__init__()
+        if num_layers not in (1, 2):
+            raise ValueError(f"num_layers must be 1 or 2, got {num_layers}")
+
+        self.num_layers = int(num_layers)
         self.gat1 = GATConv(in_dim, hid, heads=heads, dropout=dropout)
-        self.gat2 = GATConv(hid*heads, hid, heads=1, dropout=dropout)
+        if self.num_layers == 2:
+            self.gat2 = GATConv(hid * heads, hid, heads=1, dropout=dropout)
+            hidden_out_dim = hid
+        else:
+            self.gat2 = None
+            hidden_out_dim = hid * heads
 
         # ⭐ 新增：LayerNorm 穩定訓練
-        self.norm = nn.LayerNorm(hid)
+        self.norm = nn.LayerNorm(hidden_out_dim)
 
         # ⭐ 修改：輸出層小初始化
-        self.lin = nn.Linear(hid, 1)
+        self.lin = nn.Linear(hidden_out_dim, 1)
         nn.init.xavier_uniform_(self.lin.weight, gain=0.01)  # 小初始化
         nn.init.zeros_(self.lin.bias)
         self.tanh_cap = tanh_cap
@@ -346,8 +356,9 @@ class GATRegressor(nn.Module):
         """
         x = self.gat1(x, edge_index)
         x = F.elu(x)
-        x = self.gat2(x, edge_index)
-        x = F.elu(x)
+        if self.gat2 is not None:
+            x = self.gat2(x, edge_index)
+            x = F.elu(x)
 
         # ⭐ 新增：標準化
         x = self.norm(x)

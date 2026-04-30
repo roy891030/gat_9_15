@@ -262,7 +262,8 @@ def train(args):
         hid=args.hid,
         heads=args.heads,
         dropout=args.dropout,
-        tanh_cap=args.tanh_cap
+        tanh_cap=args.tanh_cap,
+        num_layers=args.num_layers,
     ).to(device)
     print("模型架構: GATRegressor (實驗性訓練)")
     
@@ -277,6 +278,7 @@ def train(args):
         "heads": args.heads,
         "dropout": args.dropout,
         "tanh_cap": args.tanh_cap,
+        "num_layers": args.num_layers,
     }
     checkpoint_metadata = {
         "artifact_dir": args.artifact_dir,
@@ -461,6 +463,8 @@ if __name__ == "__main__":
                     help="隱藏層維度")
     ap.add_argument("--heads", type=int, default=2,
                     help="GAT 注意力頭數")
+    ap.add_argument("--num_layers", type=int, default=1, choices=[1, 2],
+                    help="GAT message passing 層數")
     ap.add_argument("--dropout", type=float, default=0.1,
                     help="Dropout 比例")
     ap.add_argument("--tanh_cap", type=float, default=0.2,

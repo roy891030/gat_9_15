@@ -34,6 +34,7 @@ class GATConfig:
     patience: int
     hid: int = 64
     heads: int = 2
+    num_layers: int = 1
     loss: str = "corr_mse_ind"
     alpha_mse: float = 0.03
     lambda_var: float = 0.1
@@ -302,6 +303,8 @@ def run_gat(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, o
             str(cfg.hid),
             "--heads",
             str(cfg.heads),
+            "--num_layers",
+            str(cfg.num_layers),
             "--patience",
             str(cfg.patience),
             "--industry_csv",

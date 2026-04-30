@@ -103,6 +103,12 @@ def detect_checkpoint_model_type(path: str, map_location: str | torch.device = "
     return payload["model_type"]
 
 
+def infer_gat_num_layers(config: Mapping[str, Any], state_dict: Mapping[str, Any]) -> int:
+    if "num_layers" in config:
+        return int(config["num_layers"])
+    return 2 if any(key.startswith("gat2.") for key in state_dict.keys()) else 1
+
+
 def build_graph_model_from_checkpoint(
     path: str,
     map_location: str | torch.device = "cpu",
@@ -130,12 +136,14 @@ def build_graph_model_from_checkpoint(
 
     if model_type == "gat":
         tanh_cap = config["tanh_cap"] if "tanh_cap" in config else fallback_tanh_cap
+        num_layers = infer_gat_num_layers(config, payload["state_dict"])
         model = GATRegressor(
             in_dim=in_dim,
             hid=int(config.get("hid", fallback_hid)),
             heads=int(config.get("heads", fallback_heads)),
             dropout=float(config.get("dropout", fallback_dropout)),
             tanh_cap=tanh_cap,
+            num_layers=num_layers,
         )
         model.load_state_dict(payload["state_dict"], strict=True)
         return model, payload, [], []
@@ -148,4 +156,3 @@ def describe_checkpoint(payload: Mapping[str, Any]) -> str:
     version = payload.get("format_version", 0)
     legacy = payload.get("is_legacy", False)
     return f"model_type={model_type} format_version={version} legacy={legacy}"
-
