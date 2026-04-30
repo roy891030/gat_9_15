@@ -25,6 +25,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
+from checkpoint_utils import save_torch_checkpoint
 from model_dmfm_wei2022 import DMFM_Wei2022
 
 
@@ -435,6 +436,25 @@ def main():
     total_params = sum(p.numel() for p in model.parameters())
     print(f"模型參數: {total_params:,}")
 
+    checkpoint_config = {
+        "in_dim": F,
+        "num_features": F,
+        "hidden_dim": args.hidden_dim,
+        "heads": args.heads,
+        "dropout": args.dropout,
+        "use_factor_attention": True,
+    }
+    checkpoint_metadata = {
+        "artifact_dir": args.artifact_dir,
+        "epochs": args.epochs,
+        "lr": args.lr,
+        "train_ratio": args.train_ratio,
+        "val_ratio": args.val_ratio,
+        "weight_decay": args.weight_decay,
+        "lambda_attn": args.lambda_attn,
+        "lambda_ic": args.lambda_ic,
+    }
+
     # Optimizer
     optimizer = optim.AdamW(
         model.parameters(),
@@ -481,7 +501,13 @@ def main():
                 patience_counter = 0
 
                 # 儲存最佳模型
-                torch.save(best_state, os.path.join(args.artifact_dir, "dmfm_wei2022_best.pt"))
+                save_torch_checkpoint(
+                    os.path.join(args.artifact_dir, "dmfm_wei2022_best.pt"),
+                    model_type="dmfm",
+                    model_or_state_dict=best_state,
+                    config=checkpoint_config,
+                    metadata=checkpoint_metadata,
+                )
             else:
                 patience_counter += 1
                 if patience_counter >= args.patience:
@@ -507,7 +533,13 @@ def main():
 
     # 儲存最終模型
     final_path = os.path.join(args.artifact_dir, "dmfm_wei2022.pt")
-    torch.save(model.state_dict(), final_path)
+    save_torch_checkpoint(
+        final_path,
+        model_type="dmfm",
+        model_or_state_dict=model,
+        config=checkpoint_config,
+        metadata=checkpoint_metadata,
+    )
     print(f"\n模型已儲存至: {final_path}")
 
     # 儲存訓練日誌

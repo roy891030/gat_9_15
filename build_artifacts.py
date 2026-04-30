@@ -1,68 +1,23 @@
 # -*- coding: utf-8 -*-
 # build_artifacts.py
 """
-建立 GAT 模型所需的 artifacts（從單一 CSV 檔，且該檔已包含產業欄位）。
+建立訓練/評估共用的 artifacts。
 
-輸入參數 (Inputs):
-  --prices:        股票/財務資料的 CSV 檔，例如 unique_2019q3to2025q3.csv
-  --artifact_dir:  輸出資料夾名稱，預設為 gat_artifacts_out_plus
-  --start_date/--end_date: 資料時間範圍，格式為 YYYY-MM-DD，包含起訖日期
-  --horizon:       預測視野 k（forward-k 日報酬率作為標籤），預設值為 5
+輸入：
+- `--prices`: 股票主資料 CSV
+- `--industry_csv`: 產業欄位來源 CSV；通常可與 `--prices` 相同
+- `--artifact_dir`: 輸出目錄
+- `--start_date` / `--end_date`: 資料區間
+- `--horizon`: forward-k 報酬標籤
 
-輸出檔案 (Outputs, 會存放在 artifact_dir 資料夾中):
-  Ft_tensor.pt            # float16 格式，[T, N, F]
-                          # 特徵張量：時間 × 股票數 × 特徵數
-  yt_tensor.pt            # float32 格式，[T, N]
-                          # 標籤張量：時間 × 股票數（對應 horizon 報酬率）
-  yraw_tensor.pt          # float32 格式，[T, N]
-                          # 原始 forward-k 報酬（未做每日去均值）
-  industry_edge_index.pt  # long 格式，[2, E]
-                          # 圖結構的邊索引，表示產業內股票的關聯
-  universe_edge_index.pt  # long 格式，[2, E_univ]  <-- 新增
-                          # 全市場圖的邊索引，所有股票互相連接
-  meta.pkl                # 中繼資訊，紀錄資料時間範圍、股票數量、特徵數等
+輸出：
+- `Ft_tensor.pt`
+- `yt_tensor.pt`
+- `yraw_tensor.pt`
+- `industry_edge_index.pt`
+- `universe_edge_index.pt`
+- `meta.pkl`
 """
-
-
-
-
-'''
-如何執行：
-# 1) 進入專案並啟用 venv
-cd /path/to/your/project
-python3.10 -m venv .venv
-source .venv/bin/activate
-python -m pip install -U pip wheel setuptools pandas numpy torch
-
-# 2) 產出 artifacts（用您的唯一股池主檔；產業也直接用同一檔）
-python build_artifacts.py \
-  --prices unique_2019q3to2025q3.csv \
-  --industry_csv unique_2019q3to2025q3.csv \
-  --artifact_dir gat_artifacts_out_plus \
-  --start_date 2019-07-01 \
-  --end_date   2025-09-30 \
-  --horizon 5
-
-
-執行完成後，gat_artifacts_out_plus/ 會有五個檔（新增 universe_edge_index.pt）。
-接著就可以直接用您現成的訓練與評估腳本：
-
-# 訓練
-python train_gat_fixed.py --artifact_dir gat_artifacts_out_plus --epochs 50 --lr 1e-3 --device auto
-
-# 指標
-python evaluate_metrics.py --artifact_dir gat_artifacts_out_plus --industry_csv unique_2019q3to2025q3.csv
-
-# 投組（與 0050 比較）
-python evaluate_portfolio.py --artifact_dir gat_artifacts_out_plus \
-  --industry_csv unique_2019q3to2025q3.csv --benchmark_csv GAT0050.csv \
-  --rebalance_days 5 --top_pct 0.10 --long_short false
-
-# 圖表
-python plot_reports.py --artifact_dir gat_artifacts_out_plus \
-  --industry_csv unique_2019q3to2025q3.csv --benchmark_csv GAT0050.csv \
-  --out_dir plots_bh
-'''
 import argparse, os, pickle
 from typing import List, Dict, Tuple
 import warnings

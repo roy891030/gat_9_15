@@ -21,6 +21,7 @@ import numpy as np
 import torch
 import pandas as pd
 
+from checkpoint_utils import build_graph_model_from_checkpoint, detect_checkpoint_model_type
 from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
 from report_utils import save_json
 from train_gat_fixed import load_artifacts, time_split_indices_3
@@ -123,17 +124,14 @@ def detect_model_type(weights_path, in_dim, device="cpu"):
 
     原理：檢查權重檔的參數名稱
     """
-    state_dict = torch.load(weights_path, map_location=device)
-
-    # DMFM 特有的參數
-    dmfm_keys = ["encoder.0.weight", "gat_universe.lin_src.weight", "factor_attn.weight"]
-    is_dmfm = any(key in state_dict for key in dmfm_keys)
-    if is_dmfm:
+    model_type = detect_checkpoint_model_type(weights_path, map_location=device)
+    if model_type == "dmfm":
         print("偵測到 DMFM 模型")
         return "dmfm"
-    else:
+    if model_type == "gat":
         print("偵測到 GATRegressor 模型")
         return "gat"
+    raise ValueError(f"無法辨識模型類型: {weights_path}")
 
 
 @torch.no_grad()
@@ -272,26 +270,6 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
     return out
 
 
-def eval_naive_zero(yt, indices):
-    """
-    評估天真基準（預測為 0）
-
-    回傳：
-        dict: 包含 MSE/RMSE/MAE
-    """
-    Ys = []
-    for t in indices:
-        y = yt[t]
-        m = torch.isfinite(y)
-        if m.sum():
-            Ys.append(y[m].cpu().numpy())
-    if not Ys:
-        return {"MSE": np.nan, "RMSE": np.nan, "MAE": np.nan, "n": 0}
-    Y = np.concatenate(Ys)
-    var = float(np.var(Y))
-    return {"MSE": var, "RMSE": float(np.sqrt(var)), "MAE": float(np.mean(np.abs(Y))), "n": int(Y.size)}
-
-
 def print_metrics(name, metrics, has_industry=False):
     """格式化輸出評估指標"""
     print(f"\n{'='*60}")
@@ -360,36 +338,29 @@ def main():
         meta["dates"], train_ratio=args.train_ratio, val_ratio=args.val_ratio
     )
 
-    model_type = detect_model_type(args.weights, Fdim, device=device)
-
-    if model_type == "dmfm":
-        model = DMFM(
-            in_dim=Fdim,
-            hidden_dim=args.hid,
-            heads=args.heads,
-            use_factor_attention=True
-        ).to(device)
-    else:
-        model = GATRegressor(
-            in_dim=Fdim,
-            hid=args.hid,          # ← 新增這行
-            heads=args.heads,      # ← 新增這行
-            tanh_cap=args.tanh_cap
-        ).to(device)
-    
-    state = torch.load(args.weights, map_location=device)
-    if model_type == "dmfm":
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        if missing or unexpected:
-            print(f"[warn] DMFM 權重鍵不完全匹配 (missing={len(missing)}, unexpected={len(unexpected)})")
-    else:
-        model.load_state_dict(state)
+    model, checkpoint, missing, unexpected = build_graph_model_from_checkpoint(
+        args.weights,
+        map_location=device,
+        fallback_in_dim=Fdim,
+        fallback_hid=args.hid,
+        fallback_heads=args.heads,
+        fallback_dropout=0.1,
+        fallback_tanh_cap=args.tanh_cap,
+    )
+    model_type = checkpoint["model_type"]
+    model = model.to(device)
+    if model_type == "dmfm" and (missing or unexpected):
+        print(f"[warn] DMFM 權重鍵不完全匹配 (missing={len(missing)}, unexpected={len(unexpected)})")
 
     stocks = meta.get("stocks", [str(i) for i in range(N)])
     inds = load_industry_labels(args.industry_csv, stocks)
     has_industry = inds is not None
 
     print(f"資料: T={T}, N={N}, F={Fdim}")
+    print(
+        f"Checkpoint: model_type={checkpoint['model_type']} "
+        f"format_version={checkpoint['format_version']} legacy={checkpoint['is_legacy']}"
+    )
     print(f"產業標籤: {'有 ✓' if has_industry else '無'}")
     print(f"訓練集: {len(train_idx)} 天 | 驗證集: {len(val_idx)} 天 | 測試集: {len(test_idx)} 天")
 
@@ -405,26 +376,9 @@ def main():
     te = eval_indices(model, Ft, yt, edge_industry, edge_universe, test_idx, 
                       device=device, inds=inds, return_predictions=False)
 
-    bz = eval_naive_zero(yt, test_idx)
-
     print_metrics("訓練集", tr, has_industry=has_industry)
     print_metrics("驗證集", va, has_industry=has_industry)
     print_metrics("測試集", te, has_industry=has_industry)
-    
-    print(f"\n{'='*60}")
-    print("天真基準（預測為 0）")
-    print(f"{'='*60}")
-    print(f"  MSE  : {bz['MSE']:.6f}")
-    print(f"  RMSE : {bz['RMSE']:.6f}")
-    print(f"  MAE  : {bz['MAE']:.6f}")
-
-    if np.isfinite(bz["MSE"]) and np.isfinite(te["MSE"]):
-        impr = 100.0 * (1.0 - te["MSE"] / bz["MSE"])
-        print(f"\n{'='*60}")
-        print(f"相對天真基準的 MSE 改善：{impr:.2f}%")
-        print(f"{'='*60}")
-    else:
-        impr = np.nan
     
     print(f"\n{'='*60}")
     print("模型效果總結")
@@ -465,6 +419,9 @@ def main():
             "model_type": model_type,
             "artifact_dir": args.artifact_dir,
             "weights": args.weights,
+            "model_config": checkpoint.get("config", {}),
+            "checkpoint_format_version": checkpoint.get("format_version"),
+            "checkpoint_is_legacy": checkpoint.get("is_legacy"),
             "split": {
                 "train_ratio": args.train_ratio,
                 "val_ratio": args.val_ratio,
@@ -475,8 +432,6 @@ def main():
             "train": tr,
             "val": va,
             "test": te,
-            "naive_test": bz,
-            "mse_improvement_vs_naive_pct": impr,
             "has_industry_labels": has_industry,
         }
         save_json(args.out_json, payload)

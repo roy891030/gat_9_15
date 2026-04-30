@@ -41,6 +41,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pandas as pd
 from torch_geometric.nn import GATConv
+from checkpoint_utils import save_torch_checkpoint
 from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
 
 # -------- Device Selection --------
@@ -261,7 +262,8 @@ def train(args):
         hid=args.hid,
         heads=args.heads,
         dropout=args.dropout,
-        tanh_cap=args.tanh_cap
+        tanh_cap=args.tanh_cap,
+        num_layers=args.num_layers,
     ).to(device)
     print("模型架構: GATRegressor (實驗性訓練)")
     
@@ -269,6 +271,25 @@ def train(args):
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"可訓練參數: {total_params:,}")
     print("=" * 60)
+
+    checkpoint_config = {
+        "in_dim": Fdim,
+        "hid": args.hid,
+        "heads": args.heads,
+        "dropout": args.dropout,
+        "tanh_cap": args.tanh_cap,
+        "num_layers": args.num_layers,
+    }
+    checkpoint_metadata = {
+        "artifact_dir": args.artifact_dir,
+        "epochs": args.epochs,
+        "lr": args.lr,
+        "loss": args.loss,
+        "alpha_mse": args.alpha_mse,
+        "lambda_var": args.lambda_var,
+        "train_ratio": args.train_ratio,
+        "val_ratio": args.val_ratio,
+    }
 
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
     best_score, best_state, wait = None, None, 0
@@ -395,7 +416,13 @@ def train(args):
         model.load_state_dict(best_state, strict=True)
     
     out = os.path.join(args.artifact_dir, "gat_regressor.pt")
-    torch.save(model.state_dict(), out)
+    save_torch_checkpoint(
+        out,
+        model_type="gat",
+        model_or_state_dict=model,
+        config=checkpoint_config,
+        metadata=checkpoint_metadata,
+    )
 
     # 最終僅報告一次 holdout test（避免用 test 做早停）
     final_test_mse = evaluate_mse(
@@ -436,6 +463,8 @@ if __name__ == "__main__":
                     help="隱藏層維度")
     ap.add_argument("--heads", type=int, default=2,
                     help="GAT 注意力頭數")
+    ap.add_argument("--num_layers", type=int, default=1, choices=[1, 2],
+                    help="GAT message passing 層數")
     ap.add_argument("--dropout", type=float, default=0.1,
                     help="Dropout 比例")
     ap.add_argument("--tanh_cap", type=float, default=0.2,

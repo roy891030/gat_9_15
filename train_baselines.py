@@ -46,6 +46,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 
+from checkpoint_utils import save_torch_checkpoint
 from report_utils import save_json
 from train_gat_fixed import load_artifacts, time_split_indices_3
 
@@ -165,20 +166,6 @@ def compute_metrics(preds: np.ndarray, truths: np.ndarray, days: List[str]):
         "ICIR": icir,
         "DirAcc": dir_acc,
         "DailyIC": float(np.nanmean(daily_ic)) if daily_ic else np.nan,
-    })
-    return out
-
-
-def compute_naive_zero_metrics(truths: np.ndarray):
-    out = {"MSE": np.nan, "RMSE": np.nan, "MAE": np.nan, "n": 0}
-    if truths.size == 0:
-        return out
-    mse = float(np.mean(truths ** 2))
-    out.update({
-        "MSE": mse,
-        "RMSE": float(np.sqrt(mse)),
-        "MAE": float(np.mean(np.abs(truths))),
-        "n": int(truths.size),
     })
     return out
 
@@ -415,17 +402,28 @@ def main():
         p_val, Yval, day_val = predict_lstm(model, samples_val, args.device)
         p_te, Yte, day_te = predict_lstm(model, samples_test, args.device)
         model_path = os.path.join(args.artifact_dir, "baseline_lstm.pt")
-        torch.save(model.state_dict(), model_path)
+        save_torch_checkpoint(
+            model_path,
+            model_type="baseline_lstm",
+            model_or_state_dict=model,
+            config={
+                "input_dim": int(Ft.shape[-1]),
+                "hidden_dim": args.hidden_dim,
+                "dropout": args.dropout,
+                "lookback": args.lookback,
+            },
+            metadata={
+                "artifact_dir": args.artifact_dir,
+                "epochs": args.epochs,
+                "lr": args.lr,
+                "train_ratio": args.train_ratio,
+                "val_ratio": args.val_ratio,
+            },
+        )
         scaler = None
         metrics_train = compute_metrics(p_tr, Ytr, day_tr)
         metrics_val = compute_metrics(p_val, Yval, day_val)
         metrics_test = compute_metrics(p_te, Yte, day_te)
-
-    naive_test = compute_naive_zero_metrics(Yte)
-    if np.isfinite(naive_test["MSE"]) and np.isfinite(metrics_test["MSE"]):
-        impr = 100.0 * (1.0 - metrics_test["MSE"] / naive_test["MSE"])
-    else:
-        impr = np.nan
 
     print("\n=== 訓練集指標 ===")
     for k, v in metrics_train.items():
@@ -454,8 +452,6 @@ def main():
         "train": metrics_train,
         "val": metrics_val,
         "test": metrics_test,
-        "naive_test": naive_test,
-        "mse_improvement_vs_naive_pct": impr,
         "has_industry_labels": False,
         "lookback": args.lookback if args.model == "lstm" else None,
         "model": args.model,

@@ -21,6 +21,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+from checkpoint_utils import load_torch_checkpoint
 from model_dmfm_wei2022 import DMFM_Wei2022
 
 # 設定視覺化樣式
@@ -50,15 +51,26 @@ def analyze_contexts(args):
 
     F = len(meta['feature_cols'])
 
-    # 載入模型
-    model = DMFM_Wei2022(num_features=F, hidden_dim=64, heads=2)
     model_path = args.model_path or os.path.join(args.artifact_dir, "dmfm_wei2022_best.pt")
 
     if not os.path.exists(model_path):
         print(f"錯誤：找不到模型檔案 {model_path}")
         return
 
-    model.load_state_dict(torch.load(model_path, map_location=args.device))
+    checkpoint = load_torch_checkpoint(model_path, map_location=args.device)
+    if checkpoint["model_type"] != "dmfm":
+        print(f"錯誤：analyze_contexts 只支援 DMFM，目前為 {checkpoint['model_type']}")
+        return
+
+    ckpt_config = checkpoint.get("config", {})
+    model = DMFM_Wei2022(
+        num_features=int(ckpt_config.get("num_features", ckpt_config.get("in_dim", F))),
+        hidden_dim=int(ckpt_config.get("hidden_dim", 64)),
+        heads=int(ckpt_config.get("heads", 2)),
+        dropout=float(ckpt_config.get("dropout", 0.1)),
+        use_factor_attention=bool(ckpt_config.get("use_factor_attention", True)),
+    )
+    model.load_state_dict(checkpoint["state_dict"], strict=False)
     model.eval()
 
     # 載入資料
