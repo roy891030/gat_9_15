@@ -169,20 +169,6 @@ def compute_metrics(preds: np.ndarray, truths: np.ndarray, days: List[str]):
     return out
 
 
-def compute_naive_zero_metrics(truths: np.ndarray):
-    out = {"MSE": np.nan, "RMSE": np.nan, "MAE": np.nan, "n": 0}
-    if truths.size == 0:
-        return out
-    mse = float(np.mean(truths ** 2))
-    out.update({
-        "MSE": mse,
-        "RMSE": float(np.sqrt(mse)),
-        "MAE": float(np.mean(np.abs(truths))),
-        "n": int(truths.size),
-    })
-    return out
-
-
 def predict_tabular(model, scaler, X):
     if X.size == 0:
         return np.empty(0, dtype=np.float32)
@@ -421,12 +407,6 @@ def main():
         metrics_val = compute_metrics(p_val, Yval, day_val)
         metrics_test = compute_metrics(p_te, Yte, day_te)
 
-    naive_test = compute_naive_zero_metrics(Yte)
-    if np.isfinite(naive_test["MSE"]) and np.isfinite(metrics_test["MSE"]):
-        impr = 100.0 * (1.0 - metrics_test["MSE"] / naive_test["MSE"])
-    else:
-        impr = np.nan
-
     print("\n=== 訓練集指標 ===")
     for k, v in metrics_train.items():
         print(f"{k:>8}: {v:.6f}" if isinstance(v, float) else f"{k:>8}: {v}")
@@ -454,8 +434,6 @@ def main():
         "train": metrics_train,
         "val": metrics_val,
         "test": metrics_test,
-        "naive_test": naive_test,
-        "mse_improvement_vs_naive_pct": impr,
         "has_industry_labels": False,
         "lookback": args.lookback if args.model == "lstm" else None,
         "model": args.model,

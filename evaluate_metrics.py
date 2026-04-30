@@ -272,26 +272,6 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
     return out
 
 
-def eval_naive_zero(yt, indices):
-    """
-    評估天真基準（預測為 0）
-
-    回傳：
-        dict: 包含 MSE/RMSE/MAE
-    """
-    Ys = []
-    for t in indices:
-        y = yt[t]
-        m = torch.isfinite(y)
-        if m.sum():
-            Ys.append(y[m].cpu().numpy())
-    if not Ys:
-        return {"MSE": np.nan, "RMSE": np.nan, "MAE": np.nan, "n": 0}
-    Y = np.concatenate(Ys)
-    var = float(np.var(Y))
-    return {"MSE": var, "RMSE": float(np.sqrt(var)), "MAE": float(np.mean(np.abs(Y))), "n": int(Y.size)}
-
-
 def print_metrics(name, metrics, has_industry=False):
     """格式化輸出評估指標"""
     print(f"\n{'='*60}")
@@ -405,26 +385,9 @@ def main():
     te = eval_indices(model, Ft, yt, edge_industry, edge_universe, test_idx, 
                       device=device, inds=inds, return_predictions=False)
 
-    bz = eval_naive_zero(yt, test_idx)
-
     print_metrics("訓練集", tr, has_industry=has_industry)
     print_metrics("驗證集", va, has_industry=has_industry)
     print_metrics("測試集", te, has_industry=has_industry)
-    
-    print(f"\n{'='*60}")
-    print("天真基準（預測為 0）")
-    print(f"{'='*60}")
-    print(f"  MSE  : {bz['MSE']:.6f}")
-    print(f"  RMSE : {bz['RMSE']:.6f}")
-    print(f"  MAE  : {bz['MAE']:.6f}")
-
-    if np.isfinite(bz["MSE"]) and np.isfinite(te["MSE"]):
-        impr = 100.0 * (1.0 - te["MSE"] / bz["MSE"])
-        print(f"\n{'='*60}")
-        print(f"相對天真基準的 MSE 改善：{impr:.2f}%")
-        print(f"{'='*60}")
-    else:
-        impr = np.nan
     
     print(f"\n{'='*60}")
     print("模型效果總結")
@@ -475,8 +438,6 @@ def main():
             "train": tr,
             "val": va,
             "test": te,
-            "naive_test": bz,
-            "mse_improvement_vs_naive_pct": impr,
             "has_industry_labels": has_industry,
         }
         save_json(args.out_json, payload)
