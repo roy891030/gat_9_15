@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from checkpoint_utils import load_torch_checkpoint
 from report_utils import (
     compound_forward,
     compute_return_stats,
@@ -120,6 +121,16 @@ def resolve_model_artifacts(artifact_dir: str, model_name: str) -> Tuple[str, Op
 
 
 def infer_lstm_lookback(artifact_dir: str, fallback: int) -> int:
+    checkpoint_path = os.path.join(artifact_dir, "baseline_lstm.pt")
+    if os.path.exists(checkpoint_path):
+        try:
+            payload = load_torch_checkpoint(checkpoint_path, map_location="cpu")
+            lookback = payload.get("config", {}).get("lookback")
+            if isinstance(lookback, int) and lookback > 1:
+                return lookback
+        except Exception:
+            pass
+
     metrics_path = os.path.join(artifact_dir, "baseline_lstm_metrics.json")
     if not os.path.exists(metrics_path):
         return fallback
@@ -222,10 +233,15 @@ def evaluate_and_plot(
     if model_name in {"linear", "xgboost"}:
         model, scaler = load_linear_or_xgboost(artifact_dir, model_name)
     elif model_name == "lstm":
-        lstm_lookback = infer_lstm_lookback(artifact_dir, fallback=lookback or 5)
-        model = LSTMRegressor(input_dim=ft.shape[-1], hidden_dim=hidden_dim, dropout=dropout).to(device)
-        state = torch.load(weights_path, map_location=device)
-        model.load_state_dict(state)
+        payload = load_torch_checkpoint(weights_path, map_location=device)
+        ckpt_config = payload.get("config", {})
+        lstm_lookback = int(ckpt_config.get("lookback", infer_lstm_lookback(artifact_dir, fallback=lookback or 5)))
+        model = LSTMRegressor(
+            input_dim=int(ckpt_config.get("input_dim", ft.shape[-1])),
+            hidden_dim=int(ckpt_config.get("hidden_dim", hidden_dim)),
+            dropout=float(ckpt_config.get("dropout", dropout)),
+        ).to(device)
+        model.load_state_dict(payload["state_dict"])
         model.eval()
     else:
         raise ValueError(f"Unsupported baseline model: {model_name}")

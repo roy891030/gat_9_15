@@ -32,6 +32,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # 使用非互動式後端
 
+from checkpoint_utils import build_graph_model_from_checkpoint, detect_checkpoint_model_type
 from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
 from report_utils import (
     compound_forward,
@@ -75,10 +76,10 @@ def safe_corr(a, b):
 
 def detect_model_type(weights_path, device="cpu"):
     """自動偵測模型類型"""
-    state_dict = torch.load(weights_path, map_location=device)
-    dmfm_keys = ["encoder.0.weight", "gat_universe.lin_src.weight", "factor_attn.weight"]
-    is_dmfm = any(key in state_dict for key in dmfm_keys)
-    return "dmfm" if is_dmfm else "gat"
+    model_type = detect_checkpoint_model_type(weights_path, map_location=device)
+    if model_type not in {"dmfm", "gat"}:
+        raise ValueError(f"無法辨識模型類型: {weights_path}")
+    return model_type
 
 
 def load_industry_labels(industry_csv, stocks):
@@ -182,30 +183,24 @@ def build_reports(artifact_dir, weights, out_dir,
     print(f"驗證期: {len(val_idx)} 天 | 測試期: {len(test_idx)} 天")
 
     # 偵測並載入模型
-    model_type = detect_model_type(weights, device=device)
+    model, checkpoint, missing, unexpected = build_graph_model_from_checkpoint(
+        weights,
+        map_location=device,
+        fallback_in_dim=Fdim,
+        fallback_hid=hid,
+        fallback_heads=heads,
+        fallback_dropout=0.1,
+        fallback_tanh_cap=tanh_cap,
+    )
+    model_type = checkpoint["model_type"]
+    model = model.to(device)
     print(f"模型類型: {model_type.upper()}")
-    
-    if model_type == "dmfm":
-        model = DMFM(
-            in_dim=Fdim,
-            hidden_dim=hid,  # ← 正確
-            heads=heads,
-            dropout=0.1,
-            use_factor_attention=True
-        ).to(device)
-    else:
-        model = GATRegressor(
-            in_dim=Fdim,
-            tanh_cap=tanh_cap
-        ).to(device)
-    
-    state = torch.load(weights, map_location=device)
-    if model_type == "dmfm":
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        if missing or unexpected:
-            print(f"[warn] DMFM 權重鍵不完全匹配 (missing={len(missing)}, unexpected={len(unexpected)})")
-    else:
-        model.load_state_dict(state)
+    print(
+        f"Checkpoint: model_type={checkpoint['model_type']} "
+        f"format_version={checkpoint['format_version']} legacy={checkpoint['is_legacy']}"
+    )
+    if model_type == "dmfm" and (missing or unexpected):
+        print(f"[warn] DMFM 權重鍵不完全匹配 (missing={len(missing)}, unexpected={len(unexpected)})")
     model.eval()
 
     # 收集測試期數據
@@ -505,6 +500,9 @@ def build_reports(artifact_dir, weights, out_dir,
         "model_type": model_type,
         "artifact_dir": artifact_dir,
         "weights": weights,
+        "model_config": checkpoint.get("config", {}),
+        "checkpoint_format_version": checkpoint.get("format_version"),
+        "checkpoint_is_legacy": checkpoint.get("is_legacy"),
         "plots_dir": out_dir,
         "plots": plot_paths,
         "benchmark_path": benchmark_csv,

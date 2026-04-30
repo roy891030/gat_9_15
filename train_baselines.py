@@ -46,6 +46,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 
+from checkpoint_utils import save_torch_checkpoint
 from report_utils import save_json
 from train_gat_fixed import load_artifacts, time_split_indices_3
 
@@ -401,7 +402,24 @@ def main():
         p_val, Yval, day_val = predict_lstm(model, samples_val, args.device)
         p_te, Yte, day_te = predict_lstm(model, samples_test, args.device)
         model_path = os.path.join(args.artifact_dir, "baseline_lstm.pt")
-        torch.save(model.state_dict(), model_path)
+        save_torch_checkpoint(
+            model_path,
+            model_type="baseline_lstm",
+            model_or_state_dict=model,
+            config={
+                "input_dim": int(Ft.shape[-1]),
+                "hidden_dim": args.hidden_dim,
+                "dropout": args.dropout,
+                "lookback": args.lookback,
+            },
+            metadata={
+                "artifact_dir": args.artifact_dir,
+                "epochs": args.epochs,
+                "lr": args.lr,
+                "train_ratio": args.train_ratio,
+                "val_ratio": args.val_ratio,
+            },
+        )
         scaler = None
         metrics_train = compute_metrics(p_tr, Ytr, day_tr)
         metrics_val = compute_metrics(p_val, Yval, day_val)

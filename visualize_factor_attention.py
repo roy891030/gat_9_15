@@ -5,6 +5,7 @@ from typing import List
 import matplotlib.pyplot as plt
 import torch
 
+from checkpoint_utils import load_torch_checkpoint
 from model_dmfm_wei2022 import DMFM_Wei2022
 from train_gat_fixed import load_artifacts
 
@@ -149,15 +150,19 @@ def main():
             raise FileNotFoundError("未找到模型權重，請使用 --weights 指定")
 
     # 建立模型並載入權重
+    checkpoint = load_torch_checkpoint(weight_path, map_location=device)
+    if checkpoint["model_type"] != "dmfm":
+        raise ValueError(f"Factor Attention 僅支援 DMFM checkpoint，目前為 {checkpoint['model_type']}")
+
+    ckpt_config = checkpoint.get("config", {})
     model = DMFM_Wei2022(
-        num_features=Ft.shape[-1],
-        hidden_dim=args.hidden_dim,
-        heads=args.heads,
-        dropout=args.dropout,
+        num_features=int(ckpt_config.get("num_features", ckpt_config.get("in_dim", Ft.shape[-1]))),
+        hidden_dim=int(ckpt_config.get("hidden_dim", args.hidden_dim)),
+        heads=int(ckpt_config.get("heads", args.heads)),
+        dropout=float(ckpt_config.get("dropout", args.dropout)),
         use_factor_attention=True,
     ).to(device)
-    state = torch.load(weight_path, map_location=device)
-    model.load_state_dict(state)
+    model.load_state_dict(checkpoint["state_dict"], strict=False)
 
     daily_importance = collect_attention(Ft, industry_ei, universe_ei, model, device)
     overall_importance = daily_importance.mean(dim=0)
