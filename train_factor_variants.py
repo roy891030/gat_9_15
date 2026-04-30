@@ -11,6 +11,7 @@ import torch
 import torch.optim as optim
 
 from checkpoint_utils import save_torch_checkpoint
+from graph_utils import graph_at, load_dynamic_graphs
 from model_dmfm_wei2022 import FACTOR_VARIANTS, FactorGraphAblation
 from train_dmfm_wei2022 import (
     compute_loss,
@@ -41,7 +42,7 @@ def parse_args():
     return ap.parse_args()
 
 
-def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei,
+def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei, dynamic_graphs,
                     train_indices, lambda_attn, lambda_ic, device):
     model.train()
     metrics = {"loss": 0.0, "d_attn": 0.0, "b_factor": 0.0, "ic": 0.0}
@@ -56,14 +57,24 @@ def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei,
 
         x_t = x_t[mask]
         y_t = y_t[mask]
-        industry_ei_filtered = filter_edge_index(industry_ei, mask)
-        universe_ei_filtered = filter_edge_index(universe_ei, mask)
+        industry_ei_filtered, industry_attr_filtered = graph_at(
+            dynamic_graphs, "industry", t, industry_ei, mask=mask, device=device
+        )
+        universe_ei_filtered, universe_attr_filtered = graph_at(
+            dynamic_graphs, "universe", t, universe_ei, mask=mask, device=device
+        )
 
         if model.variant != "mlp":
             if industry_ei_filtered.shape[1] < 10 or universe_ei_filtered.shape[1] < 100:
                 continue
 
-        deep_factor, attn_weights, contexts = model(x_t, industry_ei_filtered, universe_ei_filtered)
+        deep_factor, attn_weights, contexts = model(
+            x_t,
+            industry_ei_filtered,
+            universe_ei_filtered,
+            industry_attr_filtered,
+            universe_attr_filtered,
+        )
         f_hat = model.interpret_factor(x_t, attn_weights, x_norm=contexts.get("x_norm"))
         loss, step_metrics = compute_loss(deep_factor, f_hat, y_t, lambda_attn, lambda_ic)
         if torch.isnan(loss) or torch.isinf(loss):
@@ -101,6 +112,7 @@ def main():
     yt = torch.load(os.path.join(args.artifact_dir, "yt_tensor.pt"))
     industry_ei = torch.load(os.path.join(args.artifact_dir, "industry_edge_index.pt")).to(device)
     universe_ei = torch.load(os.path.join(args.artifact_dir, "universe_edge_index.pt")).to(device)
+    dynamic_graphs = load_dynamic_graphs(args.artifact_dir, map_location="cpu")
     with open(os.path.join(args.artifact_dir, "meta.pkl"), "rb") as f:
         meta = pickle.load(f)
 
@@ -113,12 +125,17 @@ def main():
     print(f"data: T={T}, N={N}, F={F}")
     print(f"split: train={len(train_idx)} val={len(val_idx)} test={len(test_idx)}")
     print(f"industry_edges={industry_ei.shape[1]:,} universe_edges={universe_ei.shape[1]:,}")
+    if dynamic_graphs is not None:
+        print(f"dynamic_weighted_graphs=True edge_dim={dynamic_graphs.edge_dim}")
+    else:
+        print("dynamic_weighted_graphs=False (static binary fallback)")
 
     model = FactorGraphAblation(
         in_dim=F,
         hidden_dim=args.hidden_dim,
         heads=args.heads,
         dropout=args.dropout,
+        edge_dim=dynamic_graphs.edge_dim if dynamic_graphs is not None else None,
         variant=args.variant,
         use_factor_attention=not args.no_factor_attention,
     ).to(device)
@@ -131,6 +148,7 @@ def main():
         "hidden_dim": args.hidden_dim,
         "heads": args.heads,
         "dropout": args.dropout,
+        "edge_dim": dynamic_graphs.edge_dim if dynamic_graphs is not None else None,
         "variant": args.variant,
         "use_factor_attention": not args.no_factor_attention,
     }
@@ -163,6 +181,7 @@ def main():
             yt,
             industry_ei,
             universe_ei,
+            dynamic_graphs,
             train_idx,
             args.lambda_attn,
             args.lambda_ic,
@@ -170,7 +189,7 @@ def main():
         )
 
         if epoch % 5 == 0 or epoch == args.epochs:
-            eval_metrics = evaluate(model, Ft, yt, industry_ei, universe_ei, monitor_indices, device)
+            eval_metrics = evaluate(model, Ft, yt, industry_ei, universe_ei, monitor_indices, device, dynamic_graphs)
             print(
                 f"Epoch {epoch:3d} | Train Loss: {train_metrics['loss']:.4f} | "
                 f"Train IC: {train_metrics['ic']:.4f} | "
@@ -199,7 +218,7 @@ def main():
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    final_eval = evaluate(model, Ft, yt, industry_ei, universe_ei, test_idx, device)
+    final_eval = evaluate(model, Ft, yt, industry_ei, universe_ei, test_idx, device, dynamic_graphs)
     print("\nFinal Test:")
     print(f"  Mean IC: {final_eval['mean_ic']:.4f}")
     print(f"  ICIR: {final_eval['icir']:.4f}")

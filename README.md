@@ -23,6 +23,13 @@
 
 ## 快速開始
 
+預設會建立 dynamic weighted graph：
+
+- Industry graph: 每日 rolling return correlation，同產業 top-k 加權邊
+- Universe graph: 每日 rolling return correlation，全市場 top-k 加權邊
+- Edge attribute: `[abs_corr, signed_corr]`
+- 舊 static binary graph 仍保留作 fallback；如果要強制不用 dynamic graph，加入 `--no_dynamic_graphs`
+
 使用專案 venv：
 
 ```bash
@@ -30,7 +37,12 @@
   --models all \
   --windows all \
   --mode full \
-  --device cuda
+  --device cuda \
+  --rebuild_artifacts \
+  --graph_lookback 60 \
+  --graph_min_obs 20 \
+  --industry_top_k 20 \
+  --universe_top_k 40
 ```
 
 只做 smoke test：
@@ -40,7 +52,8 @@
   --models all \
   --windows all \
   --mode smoke \
-  --device cpu
+  --device cpu \
+  --rebuild_artifacts
 ```
 
 只跑六個 factor ablation models：
@@ -51,6 +64,7 @@
   --windows all \
   --mode smoke \
   --device cuda \
+  --rebuild_artifacts \
   --output_root runs_factor_smoke
 ```
 
@@ -62,7 +76,36 @@
   --windows short,medium,long \
   --mode full \
   --device cuda \
+  --rebuild_artifacts \
   --output_root runs_factor_full
+```
+
+RunPod 上只跑六個 GAT/DMFM ablation models：
+
+```bash
+cd /workspace/gat_9_15
+python run_pipeline.py \
+  --models factor_variants \
+  --windows short,medium,long \
+  --mode full \
+  --device cuda \
+  --artifact_root artifacts_dynamic \
+  --output_root runs_factor_dynamic \
+  --rebuild_artifacts
+```
+
+RunPod smoke test：
+
+```bash
+cd /workspace/gat_9_15
+python run_pipeline.py \
+  --models factor_variants \
+  --windows short \
+  --mode smoke \
+  --device cuda \
+  --artifact_root artifacts_dynamic_smoke \
+  --output_root runs_factor_dynamic_smoke \
+  --rebuild_artifacts
 ```
 
 只做後處理：
@@ -73,7 +116,7 @@ bash post_process_all.sh --device cuda --output_root runs_gpu_full
 
 ## 輸出結構
 
-- `artifacts/<window>/`: 特徵、標籤、圖結構、模型權重
+- `artifacts/<window>/`: 特徵、標籤、static graph、dynamic weighted graph、模型權重
 - `runs*/<window>/<model>/`: `train.log`、`metrics.json`、`portfolio.json`、`plots/`
 - `--models all`: 預設跑 `baseline_linear / baseline_xgboost / baseline_lstm` 加上六個 factor ablation models
 - 舊版 `gat` 與 `dmfm` 仍可用 `--models gat` 或 `--models dmfm` 單獨執行

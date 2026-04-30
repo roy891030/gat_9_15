@@ -33,6 +33,7 @@ import matplotlib
 matplotlib.use('Agg')  # 使用非互動式後端
 
 from checkpoint_utils import build_graph_model_from_checkpoint, detect_checkpoint_model_type
+from graph_utils import graph_at, load_dynamic_graphs
 from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, FactorGraphAblation, GATRegressor
 from report_utils import (
     compound_forward,
@@ -82,8 +83,15 @@ def detect_model_type(weights_path, device="cpu"):
     return model_type
 
 
-def forward_graph_model(model, x, edge_industry, edge_universe):
-    out = model(x, edge_industry, edge_universe)
+def forward_graph_model(
+    model,
+    x,
+    edge_industry,
+    edge_universe,
+    industry_edge_attr=None,
+    universe_edge_attr=None,
+):
+    out = model(x, edge_industry, edge_universe, industry_edge_attr, universe_edge_attr)
     if isinstance(out, tuple):
         pred = out[0]
         attn_weights = out[1] if len(out) > 1 else None
@@ -166,6 +174,7 @@ def build_reports(artifact_dir, weights, out_dir,
     yt = yt.to(device)
     edge_industry = edge_industry.to(device)
     edge_universe = edge_universe.to(device)
+    dynamic_graphs = load_dynamic_graphs(artifact_dir, map_location="cpu")
 
     # 回測報酬優先使用原始 forward return，避免和去均值標籤混用
     y_backtest = yt
@@ -190,6 +199,10 @@ def build_reports(artifact_dir, weights, out_dir,
     feature_cols = meta.get("feature_cols", [])
 
     print(f"資料: T={T}, N={N}, F={Fdim}")
+    if dynamic_graphs is not None:
+        print(f"動態加權圖: 有 (edge_dim={dynamic_graphs.edge_dim})")
+    else:
+        print("動態加權圖: 無，使用 static binary fallback")
     print(f"驗證期: {len(val_idx)} 天 | 測試期: {len(test_idx)} 天")
 
     # 偵測並載入模型
@@ -238,8 +251,20 @@ def build_reports(artifact_dir, weights, out_dir,
             
             x = torch.nan_to_num(x, nan=0.0)
 
-            # 前向傳播
-            p, attn_weights, contexts = forward_graph_model(model, x, edge_industry, edge_universe)
+            industry_ei_t, industry_attr_t = graph_at(
+                dynamic_graphs, "industry", t, edge_industry, device=device
+            )
+            universe_ei_t, universe_attr_t = graph_at(
+                dynamic_graphs, "universe", t, edge_universe, device=device
+            )
+            p, attn_weights, contexts = forward_graph_model(
+                model,
+                x,
+                industry_ei_t,
+                universe_ei_t,
+                industry_attr_t,
+                universe_attr_t,
+            )
             if attn_weights is not None and all_attentions is not None:
                 all_attentions.append(attn_weights[mask].detach().cpu().numpy())
 
@@ -346,7 +371,20 @@ def build_reports(artifact_dir, weights, out_dir,
             
             x = torch.nan_to_num(x, nan=0.0)
             
-            p, _, _ = forward_graph_model(model, x, edge_industry, edge_universe)
+            industry_ei_t, industry_attr_t = graph_at(
+                dynamic_graphs, "industry", t, edge_industry, device=device
+            )
+            universe_ei_t, universe_attr_t = graph_at(
+                dynamic_graphs, "universe", t, edge_universe, device=device
+            )
+            p, _, _ = forward_graph_model(
+                model,
+                x,
+                industry_ei_t,
+                universe_ei_t,
+                industry_attr_t,
+                universe_attr_t,
+            )
             
             # ✅ 修正：統一加 flatten()
             P = p[mask].detach().cpu().numpy().flatten()
@@ -504,6 +542,7 @@ def build_reports(artifact_dir, weights, out_dir,
         "artifact_dir": artifact_dir,
         "weights": weights,
         "model_config": checkpoint.get("config", {}),
+        "dynamic_graphs": meta.get("dynamic_graphs"),
         "checkpoint_format_version": checkpoint.get("format_version"),
         "checkpoint_is_legacy": checkpoint.get("is_legacy"),
         "plots_dir": out_dir,

@@ -77,6 +77,7 @@ class DMFM_Wei2022(nn.Module):
                  hidden_dim: int = 64,
                  heads: int = 2,
                  dropout: float = 0.0,
+                 edge_dim: int = None,
                  use_factor_attention: bool = True):
         """
         參數：
@@ -97,6 +98,7 @@ class DMFM_Wei2022(nn.Module):
             raise ValueError("Must provide either num_features or in_dim")
         self.hidden_dim = hidden_dim
         self.heads = heads
+        self.edge_dim = edge_dim
         self.use_factor_attention = use_factor_attention
 
         # ==================== 1. Stock Context Encoder ====================
@@ -121,7 +123,8 @@ class DMFM_Wei2022(nn.Module):
             heads=heads,
             concat=False,  # ← 論文要求：平均多頭，不拼接
             dropout=dropout,
-            add_self_loops=True
+            add_self_loops=False,
+            edge_dim=edge_dim,
         )
 
         # ==================== 3. Universe Influence Learning ====================
@@ -133,7 +136,8 @@ class DMFM_Wei2022(nn.Module):
             heads=heads,
             concat=False,  # ← 論文要求：平均多頭
             dropout=dropout,
-            add_self_loops=True
+            add_self_loops=False,
+            edge_dim=edge_dim,
         )
 
         # ==================== 4. Deep Factor Learning ====================
@@ -157,7 +161,8 @@ class DMFM_Wei2022(nn.Module):
                 nn.Linear(hidden_dim, 1)
             )
 
-    def forward(self, x, industry_edge_index, universe_edge_index):
+    def forward(self, x, industry_edge_index, universe_edge_index,
+                industry_edge_attr=None, universe_edge_attr=None):
         """
         前向傳播（完全對齊論文 Section 3.2）
 
@@ -182,7 +187,7 @@ class DMFM_Wei2022(nn.Module):
 
         # ==================== Step 2: Industry Influence & Neutralization ====================
         # 學習產業影響（論文公式 3）
-        H_I = self.gat_industry(C, industry_edge_index)  # [N, hidden_dim]
+        H_I = self.gat_industry(C, industry_edge_index, edge_attr=industry_edge_attr)  # [N, hidden_dim]
         H_I = F.elu(H_I)
 
         # 產業中性化（論文公式 4）：移除產業影響
@@ -190,7 +195,7 @@ class DMFM_Wei2022(nn.Module):
 
         # ==================== Step 3: Universe Influence & Neutralization ====================
         # ⭐ 關鍵：Universe GAT 作用在產業中性化後的特徵 C_I！
-        H_U = self.gat_universe(C_I, universe_edge_index)  # [N, hidden_dim]
+        H_U = self.gat_universe(C_I, universe_edge_index, edge_attr=universe_edge_attr)  # [N, hidden_dim]
         H_U = F.elu(H_U)
 
         # 全市場中性化（論文公式 6）：移除全市場影響
@@ -340,6 +345,7 @@ class FactorGraphAblation(nn.Module):
                  hidden_dim: int = 64,
                  heads: int = 2,
                  dropout: float = 0.1,
+                 edge_dim: int = None,
                  variant: str = "dmfm_full",
                  use_factor_attention: bool = True):
         super().__init__()
@@ -354,6 +360,7 @@ class FactorGraphAblation(nn.Module):
 
         self.hidden_dim = hidden_dim
         self.heads = heads
+        self.edge_dim = edge_dim
         self.variant = variant
         self.use_factor_attention = use_factor_attention
 
@@ -372,7 +379,8 @@ class FactorGraphAblation(nn.Module):
             heads=heads,
             concat=False,
             dropout=dropout,
-            add_self_loops=True,
+            add_self_loops=False,
+            edge_dim=edge_dim,
         )
         self.gat_universe = GATConv(
             hidden_dim,
@@ -380,7 +388,8 @@ class FactorGraphAblation(nn.Module):
             heads=heads,
             concat=False,
             dropout=dropout,
-            add_self_loops=True,
+            add_self_loops=False,
+            edge_dim=edge_dim,
         )
         self._freeze_unused_graph_layers()
 
@@ -427,7 +436,8 @@ class FactorGraphAblation(nn.Module):
             for param in self.gat_universe.parameters():
                 param.requires_grad = False
 
-    def forward(self, x, industry_edge_index, universe_edge_index):
+    def forward(self, x, industry_edge_index, universe_edge_index,
+                industry_edge_attr=None, universe_edge_attr=None):
         x_norm = self.batch_norm(x)
         C = self.encoder(x_norm)
 
@@ -440,27 +450,27 @@ class FactorGraphAblation(nn.Module):
             features = C
 
         elif self.variant == "gat_industry":
-            H_I = F.elu(self.gat_industry(C, industry_edge_index))
+            H_I = F.elu(self.gat_industry(C, industry_edge_index, edge_attr=industry_edge_attr))
             features = torch.cat([C, H_I], dim=-1)
 
         elif self.variant == "gat_universe":
-            H_U = F.elu(self.gat_universe(C, universe_edge_index))
+            H_U = F.elu(self.gat_universe(C, universe_edge_index, edge_attr=universe_edge_attr))
             features = torch.cat([C, H_U], dim=-1)
 
         elif self.variant == "gat_two_graph_no_neutral":
-            H_I = F.elu(self.gat_industry(C, industry_edge_index))
-            H_U = F.elu(self.gat_universe(C, universe_edge_index))
+            H_I = F.elu(self.gat_industry(C, industry_edge_index, edge_attr=industry_edge_attr))
+            H_U = F.elu(self.gat_universe(C, universe_edge_index, edge_attr=universe_edge_attr))
             features = torch.cat([C, H_I, H_U], dim=-1)
 
         elif self.variant == "dmfm_ind_neutral":
-            H_I = F.elu(self.gat_industry(C, industry_edge_index))
+            H_I = F.elu(self.gat_industry(C, industry_edge_index, edge_attr=industry_edge_attr))
             C_I = C - H_I
             features = torch.cat([C, C_I], dim=-1)
 
         elif self.variant == "dmfm_full":
-            H_I = F.elu(self.gat_industry(C, industry_edge_index))
+            H_I = F.elu(self.gat_industry(C, industry_edge_index, edge_attr=industry_edge_attr))
             C_I = C - H_I
-            H_U = F.elu(self.gat_universe(C_I, universe_edge_index))
+            H_U = F.elu(self.gat_universe(C_I, universe_edge_index, edge_attr=universe_edge_attr))
             C_U = C_I - H_U
             features = torch.cat([C, C_I, C_U], dim=-1)
 
@@ -511,15 +521,30 @@ class GATRegressor(nn.Module):
     - 輸出層小初始化防止梯度爆炸
     - tanh_cap 預設 1.0（溫和限制）
     """
-    def __init__(self, in_dim, hid=64, heads=2, dropout=0.1, tanh_cap=1.0, num_layers=1):
+    def __init__(self, in_dim, hid=64, heads=2, dropout=0.1, tanh_cap=1.0, num_layers=1, edge_dim=None):
         super().__init__()
         if num_layers not in (1, 2):
             raise ValueError(f"num_layers must be 1 or 2, got {num_layers}")
 
         self.num_layers = int(num_layers)
-        self.gat1 = GATConv(in_dim, hid, heads=heads, dropout=dropout)
+        self.edge_dim = edge_dim
+        self.gat1 = GATConv(
+            in_dim,
+            hid,
+            heads=heads,
+            dropout=dropout,
+            edge_dim=edge_dim,
+            add_self_loops=False,
+        )
         if self.num_layers == 2:
-            self.gat2 = GATConv(hid * heads, hid, heads=1, dropout=dropout)
+            self.gat2 = GATConv(
+                hid * heads,
+                hid,
+                heads=1,
+                dropout=dropout,
+                edge_dim=edge_dim,
+                add_self_loops=False,
+            )
             hidden_out_dim = hid
         else:
             self.gat2 = None
@@ -534,17 +559,17 @@ class GATRegressor(nn.Module):
         nn.init.zeros_(self.lin.bias)
         self.tanh_cap = tanh_cap
 
-    def forward(self, x, edge_index, edge_universe=None):
+    def forward(self, x, edge_index, edge_universe=None, edge_attr=None, edge_universe_attr=None):
         """
         參數：
             x: [N, F] 特徵矩陣
             edge_index: [2, E] 邊索引（產業圖）
             edge_universe: 忽略（保持向後相容）
         """
-        x = self.gat1(x, edge_index)
+        x = self.gat1(x, edge_index, edge_attr=edge_attr)
         x = F.elu(x)
         if self.gat2 is not None:
-            x = self.gat2(x, edge_index)
+            x = self.gat2(x, edge_index, edge_attr=edge_attr)
             x = F.elu(x)
 
         # ⭐ 新增：標準化

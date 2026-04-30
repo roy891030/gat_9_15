@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from checkpoint_utils import load_torch_checkpoint
+from graph_utils import graph_at, load_dynamic_graphs
 from model_dmfm_wei2022 import DMFM_Wei2022
 from train_gat_fixed import load_artifacts
 
@@ -28,6 +29,7 @@ def collect_attention(
     universe_edge_index: torch.Tensor,
     model: DMFM_Wei2022,
     device: torch.device,
+    dynamic_graphs=None,
 ) -> torch.Tensor:
     """Return daily mean attention importance with shape [T, F]."""
     model.eval()
@@ -38,7 +40,19 @@ def collect_attention(
     with torch.no_grad():
         for t in range(Ft_tensor.shape[0]):
             x = Ft_tensor[t].to(device)
-            _, attn_weights, _ = model(x, industry_edge_index, universe_edge_index)
+            industry_ei_t, industry_attr_t = graph_at(
+                dynamic_graphs, "industry", t, industry_edge_index, device=device
+            )
+            universe_ei_t, universe_attr_t = graph_at(
+                dynamic_graphs, "universe", t, universe_edge_index, device=device
+            )
+            _, attn_weights, _ = model(
+                x,
+                industry_ei_t,
+                universe_ei_t,
+                industry_attr_t,
+                universe_attr_t,
+            )
             if attn_weights is None:
                 raise RuntimeError("Model was initialized without factor attention enabled.")
             daily_means.append(attn_weights.mean(dim=0).cpu())
@@ -131,6 +145,7 @@ def main():
     device = get_device(args.device)
 
     Ft, yt, industry_ei, universe_ei, meta = load_artifacts(args.artifact_dir)
+    dynamic_graphs = load_dynamic_graphs(args.artifact_dir, map_location="cpu")
     feature_names: List[str] = list(meta.get("feature_cols", meta.get("feature_names", [])))
     dates: List[str] = list(meta.get("dates", []))
 
@@ -160,11 +175,12 @@ def main():
         hidden_dim=int(ckpt_config.get("hidden_dim", args.hidden_dim)),
         heads=int(ckpt_config.get("heads", args.heads)),
         dropout=float(ckpt_config.get("dropout", args.dropout)),
+        edge_dim=ckpt_config.get("edge_dim"),
         use_factor_attention=True,
     ).to(device)
     model.load_state_dict(checkpoint["state_dict"], strict=False)
 
-    daily_importance = collect_attention(Ft, industry_ei, universe_ei, model, device)
+    daily_importance = collect_attention(Ft, industry_ei, universe_ei, model, device, dynamic_graphs)
     overall_importance = daily_importance.mean(dim=0)
 
     top_k = min(args.top_k, overall_importance.numel())

@@ -26,6 +26,7 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 from checkpoint_utils import save_torch_checkpoint
+from graph_utils import graph_at, load_dynamic_graphs
 from model_dmfm_wei2022 import DMFM_Wei2022
 
 
@@ -260,7 +261,7 @@ def filter_edge_index(edge_index, mask):
     return filtered_edge_index
 
 
-def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei,
+def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei, dynamic_graphs,
                     train_indices, lambda_attn, lambda_ic, device):
     """訓練一個 epoch"""
     model.train()
@@ -287,16 +288,26 @@ def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei,
         x_t = x_t[mask]
         y_t = y_t[mask]
 
-        # 過濾並重新映射邊索引
-        industry_ei_filtered = filter_edge_index(industry_ei, mask)
-        universe_ei_filtered = filter_edge_index(universe_ei, mask)
+        # 過濾並重新映射邊索引；若有 dynamic weighted graph，使用每日圖與 edge_attr
+        industry_ei_filtered, industry_attr_filtered = graph_at(
+            dynamic_graphs, "industry", t, industry_ei, mask=mask, device=device
+        )
+        universe_ei_filtered, universe_attr_filtered = graph_at(
+            dynamic_graphs, "universe", t, universe_ei, mask=mask, device=device
+        )
 
         # 跳過邊數過少的時間點（圖結構不足）
         if industry_ei_filtered.shape[1] < 10 or universe_ei_filtered.shape[1] < 100:
             continue
 
         # Forward
-        deep_factor, attn_weights, contexts = model(x_t, industry_ei_filtered, universe_ei_filtered)
+        deep_factor, attn_weights, contexts = model(
+            x_t,
+            industry_ei_filtered,
+            universe_ei_filtered,
+            industry_attr_filtered,
+            universe_attr_filtered,
+        )
 
         # Attention estimate
         f_hat = model.interpret_factor(x_t, attn_weights, x_norm=contexts.get("x_norm"))
@@ -331,7 +342,7 @@ def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei,
 
 
 @torch.no_grad()
-def evaluate(model, Ft, yt, industry_ei, universe_ei, test_indices, device):
+def evaluate(model, Ft, yt, industry_ei, universe_ei, test_indices, device, dynamic_graphs=None):
     """評估測試集"""
     model.eval()
 
@@ -351,15 +362,25 @@ def evaluate(model, Ft, yt, industry_ei, universe_ei, test_indices, device):
         y_t = y_t[mask]
 
         # 過濾並重新映射邊索引
-        industry_ei_filtered = filter_edge_index(industry_ei, mask)
-        universe_ei_filtered = filter_edge_index(universe_ei, mask)
+        industry_ei_filtered, industry_attr_filtered = graph_at(
+            dynamic_graphs, "industry", t, industry_ei, mask=mask, device=device
+        )
+        universe_ei_filtered, universe_attr_filtered = graph_at(
+            dynamic_graphs, "universe", t, universe_ei, mask=mask, device=device
+        )
 
         # 跳過邊數過少的時間點（圖結構不足）
         if industry_ei_filtered.shape[1] < 10 or universe_ei_filtered.shape[1] < 100:
             continue
 
         # Forward
-        deep_factor, attn_weights, contexts = model(x_t, industry_ei_filtered, universe_ei_filtered)
+        deep_factor, attn_weights, contexts = model(
+            x_t,
+            industry_ei_filtered,
+            universe_ei_filtered,
+            industry_attr_filtered,
+            universe_attr_filtered,
+        )
 
         # 計算指標
         ic = compute_ic(deep_factor, y_t)
@@ -405,6 +426,7 @@ def main():
     yt = torch.load(os.path.join(args.artifact_dir, "yt_tensor.pt"))  # [T, N]
     industry_ei = torch.load(os.path.join(args.artifact_dir, "industry_edge_index.pt")).to(device)
     universe_ei = torch.load(os.path.join(args.artifact_dir, "universe_edge_index.pt")).to(device)
+    dynamic_graphs = load_dynamic_graphs(args.artifact_dir, map_location="cpu")
 
     with open(os.path.join(args.artifact_dir, "meta.pkl"), "rb") as f:
         meta = pickle.load(f)
@@ -413,6 +435,10 @@ def main():
     print(f"資料形狀: T={T}, N={N}, F={F}")
     print(f"產業圖邊數: {industry_ei.shape[1]:,}")
     print(f"全市場圖邊數: {universe_ei.shape[1]:,}")
+    if dynamic_graphs is not None:
+        print(f"動態加權圖: 有 (edge_dim={dynamic_graphs.edge_dim})")
+    else:
+        print("動態加權圖: 無，使用 static binary fallback")
 
     # 訓練/驗證/測試切分（避免 test leakage）
     train_indices, val_indices, test_indices = time_split_indices_3(
@@ -430,6 +456,7 @@ def main():
         hidden_dim=args.hidden_dim,
         heads=args.heads,
         dropout=args.dropout,
+        edge_dim=dynamic_graphs.edge_dim if dynamic_graphs is not None else None,
         use_factor_attention=True
     ).to(device)
 
@@ -442,6 +469,7 @@ def main():
         "hidden_dim": args.hidden_dim,
         "heads": args.heads,
         "dropout": args.dropout,
+        "edge_dim": dynamic_graphs.edge_dim if dynamic_graphs is not None else None,
         "use_factor_attention": True,
     }
     checkpoint_metadata = {
@@ -477,13 +505,14 @@ def main():
         # 訓練
         train_metrics = train_one_epoch(
             model, optimizer, Ft, yt, industry_ei, universe_ei,
+            dynamic_graphs,
             train_indices, args.lambda_attn, args.lambda_ic, device
         )
 
         # 評估
         if epoch % 5 == 0 or epoch == args.epochs:
             eval_metrics = evaluate(
-                model, Ft, yt, industry_ei, universe_ei, monitor_indices, device
+                model, Ft, yt, industry_ei, universe_ei, monitor_indices, device, dynamic_graphs
             )
 
             # 輸出
@@ -522,7 +551,7 @@ def main():
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    final_eval = evaluate(model, Ft, yt, industry_ei, universe_ei, test_indices, device)
+    final_eval = evaluate(model, Ft, yt, industry_ei, universe_ei, test_indices, device, dynamic_graphs)
 
     print("\n最終測試集表現:")
     print(f"  Mean IC: {final_eval['mean_ic']:.4f}")

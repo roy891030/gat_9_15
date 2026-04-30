@@ -22,6 +22,7 @@ import torch
 import pandas as pd
 
 from checkpoint_utils import build_graph_model_from_checkpoint, detect_checkpoint_model_type
+from graph_utils import graph_at, load_dynamic_graphs
 from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, FactorGraphAblation, GATRegressor
 from report_utils import save_json
 from train_gat_fixed import load_artifacts, time_split_indices_3
@@ -137,8 +138,15 @@ def detect_model_type(weights_path, in_dim, device="cpu"):
     raise ValueError(f"無法辨識模型類型: {weights_path}")
 
 
-def forward_graph_model(model, x, edge_industry, edge_universe):
-    out = model(x, edge_industry, edge_universe)
+def forward_graph_model(
+    model,
+    x,
+    edge_industry,
+    edge_universe,
+    industry_edge_attr=None,
+    universe_edge_attr=None,
+):
+    out = model(x, edge_industry, edge_universe, industry_edge_attr, universe_edge_attr)
     if isinstance(out, tuple):
         pred = out[0]
         attn_weights = out[1] if len(out) > 1 else None
@@ -149,7 +157,7 @@ def forward_graph_model(model, x, edge_industry, edge_universe):
 
 @torch.no_grad()
 def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
-                 device="cpu", inds=None, return_predictions=False):
+                 device="cpu", inds=None, return_predictions=False, dynamic_graphs=None):
     """
     評估模型在指定索引上的表現
 
@@ -185,8 +193,19 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
 
         x = torch.nan_to_num(x, nan=0.0)
 
+        industry_ei_t, industry_attr_t = graph_at(
+            dynamic_graphs, "industry", t, edge_industry, device=device
+        )
+        universe_ei_t, universe_attr_t = graph_at(
+            dynamic_graphs, "universe", t, edge_universe, device=device
+        )
         p, attn_weights, contexts = forward_graph_model(
-            model, x, edge_industry.to(device), edge_universe.to(device)
+            model,
+            x,
+            industry_ei_t,
+            universe_ei_t,
+            industry_attr_t,
+            universe_attr_t,
         )
         if attn_weights is not None:
             all_attentions.append(attn_weights[mask].detach().cpu().numpy())
@@ -344,6 +363,7 @@ def main():
     yt = yt.to(device)
     edge_industry = edge_industry.to(device)
     edge_universe = edge_universe.to(device)
+    dynamic_graphs = load_dynamic_graphs(args.artifact_dir, map_location="cpu")
     
     T, N, Fdim = Ft.shape
     train_idx, val_idx, test_idx = time_split_indices_3(
@@ -369,6 +389,10 @@ def main():
     has_industry = inds is not None
 
     print(f"資料: T={T}, N={N}, F={Fdim}")
+    if dynamic_graphs is not None:
+        print(f"動態加權圖: 有 (edge_dim={dynamic_graphs.edge_dim})")
+    else:
+        print("動態加權圖: 無，使用 static binary fallback")
     print(
         f"Checkpoint: model_type={checkpoint['model_type']} "
         f"format_version={checkpoint['format_version']} legacy={checkpoint['is_legacy']}"
@@ -378,15 +402,15 @@ def main():
 
     print("\n評估訓練集...")
     tr = eval_indices(model, Ft, yt, edge_industry, edge_universe, train_idx, 
-                      device=device, inds=inds)
+                      device=device, inds=inds, dynamic_graphs=dynamic_graphs)
 
     print("評估驗證集...")
     va = eval_indices(model, Ft, yt, edge_industry, edge_universe, val_idx,
-                      device=device, inds=inds)
+                      device=device, inds=inds, dynamic_graphs=dynamic_graphs)
 
     print("評估測試集...")
     te = eval_indices(model, Ft, yt, edge_industry, edge_universe, test_idx, 
-                      device=device, inds=inds, return_predictions=False)
+                      device=device, inds=inds, return_predictions=False, dynamic_graphs=dynamic_graphs)
 
     print_metrics("訓練集", tr, has_industry=has_industry)
     print_metrics("驗證集", va, has_industry=has_industry)
@@ -432,6 +456,7 @@ def main():
             "artifact_dir": args.artifact_dir,
             "weights": args.weights,
             "model_config": checkpoint.get("config", {}),
+            "dynamic_graphs": meta.get("dynamic_graphs"),
             "checkpoint_format_version": checkpoint.get("format_version"),
             "checkpoint_is_legacy": checkpoint.get("is_legacy"),
             "split": {

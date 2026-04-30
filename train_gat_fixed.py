@@ -42,6 +42,7 @@ import torch.nn.functional as F
 import pandas as pd
 from torch_geometric.nn import GATConv
 from checkpoint_utils import save_torch_checkpoint
+from graph_utils import graph_at, load_dynamic_graphs
 from model_dmfm_wei2022 import DMFM_Wei2022 as DMFM, GATRegressor
 
 # -------- Device Selection --------
@@ -196,7 +197,7 @@ def corr_loss(pred, target):
 
 # -------- Evaluation --------
 @torch.no_grad()
-def evaluate_mse(model, Ft, yt, edge_industry, edge_universe, indices, device="cpu"):
+def evaluate_mse(model, Ft, yt, edge_industry, edge_universe, indices, device="cpu", dynamic_graphs=None):
     """
     評估測試集 MSE
     
@@ -213,7 +214,10 @@ def evaluate_mse(model, Ft, yt, edge_industry, edge_universe, indices, device="c
         if mask.sum()==0: continue
         x = torch.nan_to_num(x, nan=0.0)
 
-        p = model(x, edge_industry.to(device))
+        industry_ei_t, industry_attr_t = graph_at(
+            dynamic_graphs, "industry", t, edge_industry, device=device
+        )
+        p = model(x, industry_ei_t, edge_attr=industry_attr_t)
 
         s += F.mse_loss(p[mask], y[mask]).item()
         c += 1
@@ -231,6 +235,7 @@ def train(args):
     yt = yt.to(device)
     edge_industry = edge_industry.to(device)
     edge_universe = edge_universe.to(device)
+    dynamic_graphs = load_dynamic_graphs(args.artifact_dir, map_location="cpu")
     
     T, N, Fdim = Ft.shape
     train_idx, val_idx, test_idx = time_split_indices_3(
@@ -241,6 +246,10 @@ def train(args):
     print(f"資料載入完成：T={T}, N={N}, F={Fdim}")
     print(f"產業圖邊數: {edge_industry.shape[1]:,}")
     print(f"全市場圖邊數: {edge_universe.shape[1]:,}")
+    if dynamic_graphs is not None:
+        print(f"動態加權圖: 有 (edge_dim={dynamic_graphs.edge_dim})")
+    else:
+        print("動態加權圖: 無，使用 static binary fallback")
     print(f"訓練集: {len(train_idx)} 天 | 驗證集: {len(val_idx)} 天 | 測試集: {len(test_idx)} 天")
     print("=" * 60)
 
@@ -264,6 +273,7 @@ def train(args):
         dropout=args.dropout,
         tanh_cap=args.tanh_cap,
         num_layers=args.num_layers,
+        edge_dim=dynamic_graphs.edge_dim if dynamic_graphs is not None else None,
     ).to(device)
     print("模型架構: GATRegressor (實驗性訓練)")
     
@@ -279,6 +289,7 @@ def train(args):
         "dropout": args.dropout,
         "tanh_cap": args.tanh_cap,
         "num_layers": args.num_layers,
+        "edge_dim": dynamic_graphs.edge_dim if dynamic_graphs is not None else None,
     }
     checkpoint_metadata = {
         "artifact_dir": args.artifact_dir,
@@ -289,6 +300,7 @@ def train(args):
         "lambda_var": args.lambda_var,
         "train_ratio": args.train_ratio,
         "val_ratio": args.val_ratio,
+        "dynamic_graphs": meta.get("dynamic_graphs"),
     }
 
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -352,8 +364,10 @@ def train(args):
             if mask.sum()==0: continue
             x = torch.nan_to_num(x, nan=0.0)
 
-            # 前向傳播
-            pred = model(x, edge_industry)
+            industry_ei_t, industry_attr_t = graph_at(
+                dynamic_graphs, "industry", t, edge_industry, device=device
+            )
+            pred = model(x, industry_ei_t, edge_attr=industry_attr_t)
 
             # 計算損失
             loss, score = step_loss(pred, y, mask, None)
@@ -380,7 +394,10 @@ def train(args):
                 if mask.sum()==0: continue
                 x = torch.nan_to_num(x, nan=0.0)
 
-                p = model(x, edge_industry)
+                industry_ei_t, industry_attr_t = graph_at(
+                    dynamic_graphs, "industry", t, edge_industry, device=device
+                )
+                p = model(x, industry_ei_t, edge_attr=industry_attr_t)
 
                 _, s = step_loss(p, y, mask, None)
                 val_scores += s
@@ -389,7 +406,7 @@ def train(args):
 
         # 監控區段 MSE（額外指標）
         mon_mse = evaluate_mse(
-            model, Ft, yt, edge_industry, edge_universe, monitor_idx, device=device
+            model, Ft, yt, edge_industry, edge_universe, monitor_idx, device=device, dynamic_graphs=dynamic_graphs
         )
         
         # 輸出訓練狀態
@@ -426,7 +443,7 @@ def train(args):
 
     # 最終僅報告一次 holdout test（避免用 test 做早停）
     final_test_mse = evaluate_mse(
-        model, Ft, yt, edge_industry, edge_universe, test_idx, device=device
+        model, Ft, yt, edge_industry, edge_universe, test_idx, device=device, dynamic_graphs=dynamic_graphs
     )
     
     print("=" * 60)

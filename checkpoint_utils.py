@@ -129,6 +129,7 @@ def build_graph_model_from_checkpoint(
             hidden_dim=int(config.get("hidden_dim", fallback_hid)),
             heads=int(config.get("heads", fallback_heads)),
             dropout=float(config.get("dropout", fallback_dropout)),
+            edge_dim=config.get("edge_dim"),
             use_factor_attention=bool(config.get("use_factor_attention", True)),
         )
         missing, unexpected = model.load_state_dict(payload["state_dict"], strict=False)
@@ -140,6 +141,7 @@ def build_graph_model_from_checkpoint(
             hidden_dim=int(config.get("hidden_dim", fallback_hid)),
             heads=int(config.get("heads", fallback_heads)),
             dropout=float(config.get("dropout", fallback_dropout)),
+            edge_dim=config.get("edge_dim"),
             variant=str(config.get("variant", "dmfm_full")),
             use_factor_attention=bool(config.get("use_factor_attention", True)),
         )
@@ -156,6 +158,7 @@ def build_graph_model_from_checkpoint(
             dropout=float(config.get("dropout", fallback_dropout)),
             tanh_cap=tanh_cap,
             num_layers=num_layers,
+            edge_dim=config.get("edge_dim"),
         )
         model.load_state_dict(payload["state_dict"], strict=True)
         return model, payload, [], []

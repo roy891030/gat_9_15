@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Sequence
 
+from graph_utils import dynamic_graph_files_exist
+
 
 WINDOW_SPECS: Dict[str, Dict[str, str]] = {
     "short": {"start": "2019-09-16", "end": "2020-12-31"},
@@ -179,12 +181,23 @@ def ensure_artifact(
             return
         if not ft_path.exists():
             raise FileNotFoundError(f"--skip-build used but missing artifacts: {artifact_dir}")
+        if not args.no_dynamic_graphs and not dynamic_graph_files_exist(str(artifact_dir)):
+            if args.dry_run:
+                print(f"[skip-build][dry-run] dynamic graph artifacts not found yet: {artifact_dir}")
+            else:
+                raise FileNotFoundError(
+                    "--skip-build used but dynamic weighted graph artifacts are missing. "
+                    "Rebuild artifacts or pass --no_dynamic_graphs for static fallback."
+                )
         print(f"[skip-build] use existing: {artifact_dir}")
         return
 
     if ft_path.exists() and not args.rebuild_artifacts:
-        print(f"[build] reuse existing artifacts: {artifact_dir}")
-        return
+        if not args.no_dynamic_graphs and not dynamic_graph_files_exist(str(artifact_dir)):
+            print(f"[build] existing artifacts missing dynamic weighted graphs; rebuilding: {artifact_dir}")
+        else:
+            print(f"[build] reuse existing artifacts: {artifact_dir}")
+            return
 
     artifact_dir.mkdir(parents=True, exist_ok=True)
     log_path = Path(args.output_root) / "_logs" / window / "build_artifacts.log"
@@ -204,6 +217,21 @@ def ensure_artifact(
         "--horizon",
         str(args.horizon),
     ]
+    if args.no_dynamic_graphs:
+        cmd.append("--no_dynamic_graphs")
+    else:
+        cmd.extend(
+            [
+                "--graph_lookback",
+                str(args.graph_lookback),
+                "--graph_min_obs",
+                str(args.graph_min_obs),
+                "--industry_top_k",
+                str(args.industry_top_k),
+                "--universe_top_k",
+                str(args.universe_top_k),
+            ]
+        )
     run_cmd(cmd, log_path=log_path, dry_run=args.dry_run)
     summary["artifacts"][window] = str(artifact_dir)
 
@@ -676,6 +704,11 @@ def parse_args():
     ap.add_argument("--artifact_root", default="artifacts")
     ap.add_argument("--output_root", default="runs")
     ap.add_argument("--horizon", type=int, default=5)
+    ap.add_argument("--no_dynamic_graphs", action="store_true", help="Use static binary graph artifacts")
+    ap.add_argument("--graph_lookback", type=int, default=60)
+    ap.add_argument("--graph_min_obs", type=int, default=20)
+    ap.add_argument("--industry_top_k", type=int, default=20)
+    ap.add_argument("--universe_top_k", type=int, default=40)
     ap.add_argument("--top_pct", type=float, default=0.10)
     ap.add_argument("--rebalance_days", type=int, default=5)
     ap.add_argument("--train_ratio", type=float, default=0.8)
@@ -711,6 +744,11 @@ def main():
         "windows": windows,
         "train_ratio": args.train_ratio,
         "val_ratio": args.val_ratio,
+        "dynamic_graphs": not args.no_dynamic_graphs,
+        "graph_lookback": args.graph_lookback,
+        "graph_min_obs": args.graph_min_obs,
+        "industry_top_k": args.industry_top_k,
+        "universe_top_k": args.universe_top_k,
         "artifacts": {},
         "runs": [],
         "dry_run": args.dry_run,
@@ -721,6 +759,11 @@ def main():
     print("=" * 72)
     print(f"mode={args.mode} models={models} windows={windows} device={args.device}")
     print(f"artifact_root={artifact_root} output_root={output_root}")
+    print(
+        f"dynamic_graphs={not args.no_dynamic_graphs} "
+        f"lookback={args.graph_lookback} min_obs={args.graph_min_obs} "
+        f"industry_top_k={args.industry_top_k} universe_top_k={args.universe_top_k}"
+    )
     print(f"skip_build={args.skip_build} skip_train={args.skip_train} dry_run={args.dry_run}")
 
     for window in windows:

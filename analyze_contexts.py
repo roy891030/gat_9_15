@@ -22,6 +22,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from checkpoint_utils import load_torch_checkpoint
+from graph_utils import graph_at, load_dynamic_graphs
 from model_dmfm_wei2022 import DMFM_Wei2022
 
 # 設定視覺化樣式
@@ -44,6 +45,7 @@ def analyze_contexts(args):
     """分析三種特徵的差異"""
 
     os.makedirs(args.output_dir, exist_ok=True)
+    device = torch.device(args.device)
 
     # 載入 metadata
     with open(os.path.join(args.artifact_dir, "meta.pkl"), "rb") as f:
@@ -68,8 +70,9 @@ def analyze_contexts(args):
         hidden_dim=int(ckpt_config.get("hidden_dim", 64)),
         heads=int(ckpt_config.get("heads", 2)),
         dropout=float(ckpt_config.get("dropout", 0.1)),
+        edge_dim=ckpt_config.get("edge_dim"),
         use_factor_attention=bool(ckpt_config.get("use_factor_attention", True)),
-    )
+    ).to(device)
     model.load_state_dict(checkpoint["state_dict"], strict=False)
     model.eval()
 
@@ -77,6 +80,7 @@ def analyze_contexts(args):
     Ft = torch.load(os.path.join(args.artifact_dir, "Ft_tensor.pt"))
     industry_ei = torch.load(os.path.join(args.artifact_dir, "industry_edge_index.pt"))
     universe_ei = torch.load(os.path.join(args.artifact_dir, "universe_edge_index.pt"))
+    dynamic_graphs = load_dynamic_graphs(args.artifact_dir, map_location="cpu")
 
     T, N, _ = Ft.shape
     split_idx = int(T * 0.8)
@@ -93,14 +97,27 @@ def analyze_contexts(args):
 
     with torch.no_grad():
         for t in range(min(args.sample_days, len(Ft_test))):
-            x_t = Ft_test[t]
-            _, _, contexts = model(x_t, industry_ei, universe_ei)
+            global_t = split_idx + t
+            x_t = Ft_test[t].to(device)
+            industry_ei_t, industry_attr_t = graph_at(
+                dynamic_graphs, "industry", global_t, industry_ei, device=device
+            )
+            universe_ei_t, universe_attr_t = graph_at(
+                dynamic_graphs, "universe", global_t, universe_ei, device=device
+            )
+            _, _, contexts = model(
+                x_t,
+                industry_ei_t,
+                universe_ei_t,
+                industry_attr_t,
+                universe_attr_t,
+            )
 
-            all_C.append(contexts['C'].numpy())
-            all_C_I.append(contexts['C_I'].numpy())
-            all_C_U.append(contexts['C_U'].numpy())
-            all_H_I.append(contexts['H_I'].numpy())
-            all_H_U.append(contexts['H_U'].numpy())
+            all_C.append(contexts['C'].detach().cpu().numpy())
+            all_C_I.append(contexts['C_I'].detach().cpu().numpy())
+            all_C_U.append(contexts['C_U'].detach().cpu().numpy())
+            all_H_I.append(contexts['H_I'].detach().cpu().numpy())
+            all_H_U.append(contexts['H_U'].detach().cpu().numpy())
 
     # 拼接所有天的資料 [days * N, hidden_dim]
     C = np.concatenate(all_C, axis=0)

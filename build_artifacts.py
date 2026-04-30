@@ -16,15 +16,25 @@
 - `yraw_tensor.pt`
 - `industry_edge_index.pt`
 - `universe_edge_index.pt`
+- `dynamic_*_edge_indices.pt`
+- `dynamic_*_edge_attrs.pt`
 - `meta.pkl`
 """
-import argparse, os, pickle
+import argparse, json, os, pickle
 from typing import List, Dict, Tuple
 import warnings
 
 import numpy as np
 import pandas as pd
 import torch
+
+from graph_utils import (
+    DYNAMIC_GRAPH_META,
+    INDUSTRY_EDGE_ATTRS,
+    INDUSTRY_EDGE_INDICES,
+    UNIVERSE_EDGE_ATTRS,
+    UNIVERSE_EDGE_INDICES,
+)
 
 # ---------------- Args ----------------
 def parse_args():
@@ -35,6 +45,16 @@ def parse_args():
     ap.add_argument("--start_date", default="2019-07-01")
     ap.add_argument("--end_date",   default="2025-09-30")
     ap.add_argument("--horizon", type=int, default=5)
+    ap.add_argument("--no_dynamic_graphs", action="store_true",
+                    help="Disable dynamic weighted graph artifacts")
+    ap.add_argument("--graph_lookback", type=int, default=60,
+                    help="Rolling lookback days for graph correlation weights")
+    ap.add_argument("--graph_min_obs", type=int, default=20,
+                    help="Minimum valid observations for rolling graph correlations")
+    ap.add_argument("--industry_top_k", type=int, default=20,
+                    help="Max non-self same-industry neighbors per target in dynamic industry graph")
+    ap.add_argument("--universe_top_k", type=int, default=40,
+                    help="Max non-self market neighbors per target in dynamic universe graph")
     return ap.parse_args()
 
 # ---------------- Column maps (ZH/EN) ----------------
@@ -328,6 +348,17 @@ def to_tensors(df: pd.DataFrame, cm: Dict[str,str], feature_cols: List[str], sta
         list(stocks),
     )
 # ---------------- Graph Construction ----------------
+def load_industry_series(df, cm, stocks):
+    ind_col = cm["industry"] if cm["industry"] in df.columns else None
+    if ind_col is None:
+        return pd.Series(index=pd.Index(stocks), data="ALL")
+
+    tmp = df[[cm["code"], ind_col]].dropna()
+    tmp[cm["code"]] = tmp[cm["code"]].astype(str)
+    first = tmp.drop_duplicates(subset=[cm["code"]], keep="first").set_index(cm["code"])[ind_col]
+    return first.reindex(pd.Index(stocks)).fillna("UNK")
+
+
 def build_industry_edges(df, cm, stocks):
     """
     建立產業圖（Industry Graph）的邊索引
@@ -344,16 +375,7 @@ def build_industry_edges(df, cm, stocks):
     回傳：
         torch.Tensor [2, E]: 邊索引，格式為 [source_nodes, target_nodes]
     """
-    ind_col = cm["industry"] if cm["industry"] in df.columns else None
-    if ind_col is None:
-        # 若無產業欄位，將所有股票視為同一產業
-        inds = pd.Series(index=pd.Index(stocks), data="ALL")
-    else:
-        # 讀取產業資訊（每檔股票取第一筆記錄的產業分類）
-        tmp = df[[cm["code"], ind_col]].dropna()
-        tmp[cm["code"]] = tmp[cm["code"]].astype(str)
-        first = tmp.drop_duplicates(subset=[cm["code"]], keep="first").set_index(cm["code"])[ind_col]
-        inds = first.reindex(pd.Index(stocks)).fillna("UNK")
+    inds = load_industry_series(df, cm, stocks)
 
     N = len(stocks)
     adj = np.zeros((N, N), dtype=np.uint8)
@@ -408,6 +430,102 @@ def build_universe_edges(stocks):
     return edge_index
 
 
+def build_return_matrix(df, cm, dates, stocks):
+    """Align daily one-day returns to [T, N] for dynamic graph weights."""
+    d = df[(df[cm["date"]] >= pd.to_datetime(min(dates))) & (df[cm["date"]] <= pd.to_datetime(max(dates)))].copy()
+    d = d.drop_duplicates(subset=[cm["date"], cm["code"]])
+    d["t_idx"] = pd.Categorical(d[cm["date"]], categories=pd.to_datetime(dates), ordered=True).codes
+    d["s_idx"] = pd.Categorical(d[cm["code"]].astype(str), categories=pd.Index(stocks), ordered=True).codes
+    piv = d.pivot_table(index="t_idx", columns="s_idx", values="ret_1", aggfunc="first")
+    R = np.full((len(dates), len(stocks)), np.nan, dtype=np.float32)
+    if not piv.empty:
+        R[piv.index.values[:, None], piv.columns.values[None, :]] = piv.values
+    return R
+
+
+def rolling_corr_matrix(returns, t, lookback, min_obs):
+    start = max(0, t - lookback + 1)
+    W = returns[start:t + 1].astype(np.float32, copy=False)
+    valid = np.isfinite(W)
+    counts = valid.sum(axis=0)
+    enough = counts >= min_obs
+    if enough.sum() < 2:
+        return np.eye(W.shape[1], dtype=np.float32)
+
+    mu = np.nanmean(W, axis=0)
+    sd = np.nanstd(W, axis=0)
+    Z = (W - mu) / sd
+    Z[:, (~enough) | (~np.isfinite(sd)) | (sd <= 1e-12)] = 0.0
+    Z = np.nan_to_num(Z, nan=0.0, posinf=0.0, neginf=0.0)
+
+    denom = np.maximum(np.minimum.outer(counts, counts) - 1, 1).astype(np.float32)
+    corr = (Z.T @ Z) / denom
+    corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
+    corr = np.clip(corr, -1.0, 1.0).astype(np.float32)
+    np.fill_diagonal(corr, 1.0)
+    return corr
+
+
+def topk_edges_from_corr(corr, candidate_mask, top_k):
+    N = corr.shape[0]
+    abs_corr = np.abs(corr)
+    src_all, dst_all, attrs = [], [], []
+    for dst in range(N):
+        src_all.append(dst)
+        dst_all.append(dst)
+        attrs.append((1.0, 1.0))
+
+        candidates = np.flatnonzero(candidate_mask[:, dst])
+        candidates = candidates[candidates != dst]
+        if candidates.size == 0 or top_k <= 0:
+            continue
+
+        scores = abs_corr[candidates, dst]
+        keep = scores > 1e-6
+        candidates = candidates[keep]
+        scores = scores[keep]
+        if candidates.size == 0:
+            continue
+
+        if candidates.size > top_k:
+            top_pos = np.argpartition(scores, -top_k)[-top_k:]
+            candidates = candidates[top_pos]
+            scores = scores[top_pos]
+        order = np.argsort(scores)[::-1]
+        candidates = candidates[order]
+
+        for src in candidates:
+            signed = float(corr[src, dst])
+            src_all.append(int(src))
+            dst_all.append(int(dst))
+            attrs.append((abs(signed), signed))
+
+    edge_index = torch.tensor([src_all, dst_all], dtype=torch.long)
+    edge_attr = torch.tensor(attrs, dtype=torch.float32)
+    return edge_index, edge_attr
+
+
+def build_dynamic_weighted_graphs(df, cm, dates, stocks, lookback, min_obs, industry_top_k, universe_top_k):
+    returns = build_return_matrix(df, cm, dates, stocks)
+    inds = load_industry_series(df, cm, stocks)
+    ind_values = inds.reindex(pd.Index(stocks)).astype(str).to_numpy()
+    same_industry = ind_values[:, None] == ind_values[None, :]
+    universe_candidates = np.ones((len(stocks), len(stocks)), dtype=bool)
+
+    industry_edge_indices, industry_edge_attrs = [], []
+    universe_edge_indices, universe_edge_attrs = [], []
+    for t in range(len(dates)):
+        corr = rolling_corr_matrix(returns, t, lookback=lookback, min_obs=min_obs)
+        ind_ei, ind_attr = topk_edges_from_corr(corr, same_industry, industry_top_k)
+        uni_ei, uni_attr = topk_edges_from_corr(corr, universe_candidates, universe_top_k)
+        industry_edge_indices.append(ind_ei)
+        industry_edge_attrs.append(ind_attr)
+        universe_edge_indices.append(uni_ei)
+        universe_edge_attrs.append(uni_attr)
+
+    return industry_edge_indices, industry_edge_attrs, universe_edge_indices, universe_edge_attrs
+
+
 # ---------------- Main ----------------
 def main():
     args = parse_args()
@@ -431,6 +549,41 @@ def main():
     # 建立兩種圖結構
     industry_edge_index = build_industry_edges(df_b, cm, stocks)      # 產業圖
     universe_edge_index = build_universe_edges(stocks)                # 全市場圖
+    dynamic_graph_stats = None
+    if not args.no_dynamic_graphs:
+        print("建立 dynamic weighted graphs...")
+        (
+            dynamic_industry_edge_indices,
+            dynamic_industry_edge_attrs,
+            dynamic_universe_edge_indices,
+            dynamic_universe_edge_attrs,
+        ) = build_dynamic_weighted_graphs(
+            df_b,
+            cm,
+            dates,
+            stocks,
+            lookback=args.graph_lookback,
+            min_obs=args.graph_min_obs,
+            industry_top_k=args.industry_top_k,
+            universe_top_k=args.universe_top_k,
+        )
+        dynamic_graph_stats = {
+            "enabled": True,
+            "edge_dim": 2,
+            "edge_attr": ["abs_corr", "signed_corr"],
+            "lookback": args.graph_lookback,
+            "min_obs": args.graph_min_obs,
+            "industry_top_k": args.industry_top_k,
+            "universe_top_k": args.universe_top_k,
+            "avg_industry_edges": float(np.mean([ei.shape[1] for ei in dynamic_industry_edge_indices])),
+            "avg_universe_edges": float(np.mean([ei.shape[1] for ei in dynamic_universe_edge_indices])),
+            "max_industry_edges": int(max(ei.shape[1] for ei in dynamic_industry_edge_indices)),
+            "max_universe_edges": int(max(ei.shape[1] for ei in dynamic_universe_edge_indices)),
+        }
+    else:
+        dynamic_industry_edge_indices = dynamic_industry_edge_attrs = None
+        dynamic_universe_edge_indices = dynamic_universe_edge_attrs = None
+        dynamic_graph_stats = {"enabled": False}
 
     # 儲存所有 artifacts
     torch.save(Ft_t, os.path.join(args.artifact_dir, "Ft_tensor.pt"))
@@ -438,6 +591,24 @@ def main():
     torch.save(Y_raw_t, os.path.join(args.artifact_dir, "yraw_tensor.pt"))
     torch.save(industry_edge_index, os.path.join(args.artifact_dir, "industry_edge_index.pt"))
     torch.save(universe_edge_index, os.path.join(args.artifact_dir, "universe_edge_index.pt"))  # 新增
+    if dynamic_graph_stats.get("enabled"):
+        torch.save(dynamic_industry_edge_indices, os.path.join(args.artifact_dir, INDUSTRY_EDGE_INDICES))
+        torch.save(dynamic_industry_edge_attrs, os.path.join(args.artifact_dir, INDUSTRY_EDGE_ATTRS))
+        torch.save(dynamic_universe_edge_indices, os.path.join(args.artifact_dir, UNIVERSE_EDGE_INDICES))
+        torch.save(dynamic_universe_edge_attrs, os.path.join(args.artifact_dir, UNIVERSE_EDGE_ATTRS))
+        with open(os.path.join(args.artifact_dir, DYNAMIC_GRAPH_META), "w", encoding="utf-8") as f:
+            json.dump(dynamic_graph_stats, f, ensure_ascii=False, indent=2)
+    else:
+        for stale_name in (
+            INDUSTRY_EDGE_INDICES,
+            INDUSTRY_EDGE_ATTRS,
+            UNIVERSE_EDGE_INDICES,
+            UNIVERSE_EDGE_ATTRS,
+            DYNAMIC_GRAPH_META,
+        ):
+            stale_path = os.path.join(args.artifact_dir, stale_name)
+            if os.path.exists(stale_path):
+                os.remove(stale_path)
     
     # 儲存 metadata
     meta = {
@@ -451,6 +622,7 @@ def main():
         "num_features": len(feature_cols),                  # 新增：特徵數量
         "num_industry_edges": industry_edge_index.shape[1], # 新增：產業圖邊數
         "num_universe_edges": universe_edge_index.shape[1], # 新增：全市場圖邊數
+        "dynamic_graphs": dynamic_graph_stats,
     }
     with open(os.path.join(args.artifact_dir, "meta.pkl"), "wb") as f: 
         pickle.dump(meta, f)
@@ -465,6 +637,11 @@ def main():
     print(f" ✓ yraw_tensor.pt          : {tuple(Y_raw_t.shape)}, {Y_raw_t.dtype}")
     print(f" ✓ industry_edge_index.pt  : {tuple(industry_edge_index.shape)}")
     print(f" ✓ universe_edge_index.pt  : {tuple(universe_edge_index.shape)} (新增)")
+    if dynamic_graph_stats.get("enabled"):
+        print(f" ✓ {INDUSTRY_EDGE_INDICES}: {len(dynamic_industry_edge_indices)} days")
+        print(f" ✓ {INDUSTRY_EDGE_ATTRS}  : edge_dim=2")
+        print(f" ✓ {UNIVERSE_EDGE_INDICES}: {len(dynamic_universe_edge_indices)} days")
+        print(f" ✓ {UNIVERSE_EDGE_ATTRS}  : edge_dim=2")
     print(f" ✓ meta.pkl                : 包含 {len(meta)} 項 metadata")
     
     print("\n資料統計：")
@@ -476,6 +653,9 @@ def main():
     print("\n圖結構統計：")
     print(f" - 產業圖邊數: {industry_edge_index.shape[1]:,}")
     print(f" - 全市場圖邊數: {universe_edge_index.shape[1]:,}")
+    if dynamic_graph_stats.get("enabled"):
+        print(f" - 動態產業圖平均邊數/日: {dynamic_graph_stats['avg_industry_edges']:.1f}")
+        print(f" - 動態全市場圖平均邊數/日: {dynamic_graph_stats['avg_universe_edges']:.1f}")
     print(f" - 平均每檔股票的產業內連接數: {industry_edge_index.shape[1] / len(stocks):.1f}")
     print(f" - 平均每檔股票的全市場連接數: {universe_edge_index.shape[1] / len(stocks):.1f}")
     
