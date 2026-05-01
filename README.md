@@ -11,9 +11,9 @@
 ## 核心腳本
 
 - `build_artifacts.py`: 建立 `artifacts/<window>/`
-- `train_dmfm_wei2022.py`: 訓練舊版完整 DMFM
+- `train_dmfm_wei2022.py`: 訓練舊版完整 DMFM（保留給舊 checkpoint / standalone 實驗）
 - `train_factor_variants.py`: 訓練 `mlp / gat_industry / gat_universe / gat_two_graph_no_neutral / dmfm_ind_neutral / dmfm_full`
-- `train_gat_fixed.py`: 訓練 GAT
+- `train_gat_fixed.py`: 訓練舊版 GAT（保留給舊 checkpoint / standalone 實驗）
 - `train_baselines.py`: 訓練 `linear / xgboost / lstm`
 - `evaluate_metrics.py`: 輸出 train / val / test 指標
 - `evaluate_portfolio.py`: 輸出回測與圖表
@@ -99,7 +99,7 @@ RunPod 上用同一份 pipeline 統一比較 baseline / static graph / dynamic g
 ```bash
 cd /workspace/gat_9_15
 python run_pipeline.py \
-  --models baseline,gat,dmfm,factor_variants \
+  --models baseline,factor_variants \
   --windows short,medium,long \
   --mode full \
   --device cuda \
@@ -141,7 +141,7 @@ bash post_process_all.sh --device cuda --output_root runs_gpu_full
 - `artifacts/<window>/`: 特徵、標籤、static graph、dynamic weighted graph、模型權重
 - `runs*/<window>/<model>/`: `train.log`、`metrics.json`、`portfolio.json`、`plots/`
 - `--models all`: 預設跑 `baseline_linear / baseline_xgboost / baseline_lstm` 加上六個 factor ablation models
-- 舊版 `gat` 與 `dmfm` 仍可用 `--models gat` 或 `--models dmfm` 單獨執行
+- 舊版 `gat` 與 `dmfm` 不再由 `run_pipeline.py` 執行；如需載入舊 checkpoint，evaluation 仍保留相容。
 
 ## 主要評估口徑
 

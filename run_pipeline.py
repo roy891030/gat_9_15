@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Unified experiment runner for baseline / GAT / DMFM.
+Unified experiment runner for baseline and factor graph ablation models.
 
 Goals:
 1) Run each model family independently across short/medium/long windows.
@@ -42,19 +42,6 @@ DEFAULT_MODELS = ["baseline", *FACTOR_MODELS]
 
 
 @dataclass
-class GATConfig:
-    epochs: int
-    lr: float
-    patience: int
-    hid: int = 64
-    heads: int = 2
-    num_layers: int = 1
-    loss: str = "corr_mse_ind"
-    alpha_mse: float = 0.03
-    lambda_var: float = 0.1
-
-
-@dataclass
 class DMFMConfig:
     epochs: int
     lr: float
@@ -76,7 +63,6 @@ class BaselineConfig:
     xgb_lr: float
 
 
-SMOKE_GAT = GATConfig(epochs=2, lr=1e-3, patience=2)
 SMOKE_DMFM = DMFMConfig(epochs=2, lr=1e-4, patience=2)
 SMOKE_BASELINE = BaselineConfig(
     lstm_epochs=2,
@@ -87,11 +73,6 @@ SMOKE_BASELINE = BaselineConfig(
     xgb_lr=0.1,
 )
 
-FULL_GAT_BY_WINDOW = {
-    "short": GATConfig(epochs=30, lr=1e-3, patience=10),
-    "medium": GATConfig(epochs=50, lr=1e-3, patience=15),
-    "long": GATConfig(epochs=50, lr=1e-3, patience=15),
-}
 FULL_DMFM_BY_WINDOW = {
     "short": DMFMConfig(epochs=50, lr=1e-4, patience=20),
     "medium": DMFMConfig(epochs=100, lr=1e-4, patience=30),
@@ -140,7 +121,7 @@ def parse_model_list(raw: str) -> List[str]:
         else:
             expanded.append(part)
 
-    allowed = ["baseline", "gat", "dmfm", "factor_variants", *FACTOR_MODELS]
+    allowed = ["baseline", "factor_variants", *FACTOR_MODELS]
     invalid = [x for x in expanded if x not in allowed or x == "factor_variants"]
     if invalid:
         raise ValueError(f"invalid models: {invalid}, allowed={allowed + ['all']}")
@@ -361,248 +342,6 @@ def run_baseline(
     )
 
 
-def run_gat(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, object]):
-    out_dir = Path(args.output_root) / window / "gat"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    cfg = SMOKE_GAT if args.mode == "smoke" else FULL_GAT_BY_WINDOW[window]
-
-    if not args.skip_train:
-        cmd_train = [
-            py,
-            "train_gat_fixed.py",
-            "--artifact_dir",
-            str(artifact_dir),
-            "--epochs",
-            str(cfg.epochs),
-            "--lr",
-            str(cfg.lr),
-            "--device",
-            args.device,
-            "--loss",
-            cfg.loss,
-            "--alpha_mse",
-            str(cfg.alpha_mse),
-            "--lambda_var",
-            str(cfg.lambda_var),
-            "--hid",
-            str(cfg.hid),
-            "--heads",
-            str(cfg.heads),
-            "--num_layers",
-            str(cfg.num_layers),
-            "--patience",
-            str(cfg.patience),
-            "--industry_csv",
-            args.industry_csv,
-            "--train_ratio",
-            str(args.train_ratio),
-            "--val_ratio",
-            str(args.val_ratio),
-        ]
-        if args.preload_gpu:
-            cmd_train.append("--preload_gpu")
-        run_cmd(cmd_train, log_path=out_dir / "train.log", dry_run=args.dry_run)
-    else:
-        print(f"[skip-train] gat {window}")
-
-    gat_weight = artifact_dir / "gat_regressor.pt"
-    cmd_metrics = [
-        py,
-        "evaluate_metrics.py",
-        "--artifact_dir",
-        str(artifact_dir),
-        "--weights",
-        str(gat_weight),
-        "--device",
-        args.device,
-        "--industry_csv",
-        args.industry_csv,
-        "--train_ratio",
-        str(args.train_ratio),
-        "--val_ratio",
-        str(args.val_ratio),
-        "--out_json",
-        str(out_dir / "metrics.json"),
-    ]
-    run_cmd(cmd_metrics, log_path=out_dir / "metrics.log", dry_run=args.dry_run)
-
-    cmd_backtest = [
-        py,
-        "evaluate_portfolio.py",
-        "--artifact_dir",
-        str(artifact_dir),
-        "--weights",
-        str(gat_weight),
-        "--out_dir",
-        str(out_dir / "plots"),
-        "--benchmark_csv",
-        args.benchmark_csv,
-        "--top_pct",
-        str(args.top_pct),
-        "--rebalance_days",
-        str(args.rebalance_days),
-        "--device",
-        args.device,
-        "--industry_csv",
-        args.industry_csv,
-        "--train_ratio",
-        str(args.train_ratio),
-        "--val_ratio",
-        str(args.val_ratio),
-    ]
-    run_cmd(cmd_backtest, log_path=out_dir / "backtest.log", dry_run=args.dry_run)
-
-    append_run(
-        summary,
-        args,
-        {
-            "window": window,
-            "model": "gat",
-            "artifact_dir": str(artifact_dir),
-            "output_dir": str(out_dir),
-            "metrics_json": str(out_dir / "metrics.json"),
-            "portfolio_json": str(out_dir / "portfolio.json"),
-            "plots_dir": str(out_dir / "plots"),
-        },
-    )
-
-
-def run_dmfm(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, object]):
-    out_dir = Path(args.output_root) / window / "dmfm"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    cfg = SMOKE_DMFM if args.mode == "smoke" else FULL_DMFM_BY_WINDOW[window]
-
-    if not args.skip_train:
-        cmd_train = [
-            py,
-            "train_dmfm_wei2022.py",
-            "--artifact_dir",
-            str(artifact_dir),
-            "--epochs",
-            str(cfg.epochs),
-            "--lr",
-            str(cfg.lr),
-            "--device",
-            args.device,
-            "--hidden_dim",
-            str(cfg.hidden_dim),
-            "--heads",
-            str(cfg.heads),
-            "--dropout",
-            str(cfg.dropout),
-            "--lambda_attn",
-            str(cfg.lambda_attn),
-            "--lambda_ic",
-            str(cfg.lambda_ic),
-            "--patience",
-            str(cfg.patience),
-            "--train_ratio",
-            str(args.train_ratio),
-            "--val_ratio",
-            str(args.val_ratio),
-        ]
-        if args.preload_gpu:
-            cmd_train.append("--preload_gpu")
-        run_cmd(cmd_train, log_path=out_dir / "train.log", dry_run=args.dry_run)
-    else:
-        print(f"[skip-train] dmfm {window}")
-
-    dmfm_weight = artifact_dir / "dmfm_wei2022_best.pt"
-    cmd_metrics = [
-        py,
-        "evaluate_metrics.py",
-        "--artifact_dir",
-        str(artifact_dir),
-        "--weights",
-        str(dmfm_weight),
-        "--device",
-        args.device,
-        "--industry_csv",
-        args.industry_csv,
-        "--train_ratio",
-        str(args.train_ratio),
-        "--val_ratio",
-        str(args.val_ratio),
-        "--out_json",
-        str(out_dir / "metrics.json"),
-    ]
-    run_cmd(cmd_metrics, log_path=out_dir / "metrics.log", dry_run=args.dry_run)
-
-    cmd_backtest = [
-        py,
-        "evaluate_portfolio.py",
-        "--artifact_dir",
-        str(artifact_dir),
-        "--weights",
-        str(dmfm_weight),
-        "--out_dir",
-        str(out_dir / "plots"),
-        "--benchmark_csv",
-        args.benchmark_csv,
-        "--top_pct",
-        str(args.top_pct),
-        "--rebalance_days",
-        str(args.rebalance_days),
-        "--device",
-        args.device,
-        "--industry_csv",
-        args.industry_csv,
-        "--train_ratio",
-        str(args.train_ratio),
-        "--val_ratio",
-        str(args.val_ratio),
-    ]
-    run_cmd(cmd_backtest, log_path=out_dir / "backtest.log", dry_run=args.dry_run)
-
-    if args.extra_analysis:
-        cmd_attn = [
-            py,
-            "visualize_factor_attention.py",
-            "--artifact_dir",
-            str(artifact_dir),
-            "--weights",
-            str(dmfm_weight),
-            "--output_dir",
-            str(out_dir / "attention"),
-            "--device",
-            "cpu" if args.device == "cuda" else args.device,
-        ]
-        run_cmd(cmd_attn, log_path=out_dir / "attention.log", dry_run=args.dry_run)
-
-        cmd_ctx = [
-            py,
-            "analyze_contexts.py",
-            "--artifact_dir",
-            str(artifact_dir),
-            "--model_path",
-            str(dmfm_weight),
-            "--output_dir",
-            str(out_dir / "contexts"),
-            "--device",
-            "cpu",
-            "--sample_days",
-            str(10 if args.mode == "smoke" else 20),
-        ]
-        run_cmd(cmd_ctx, log_path=out_dir / "contexts.log", dry_run=args.dry_run)
-
-    append_run(
-        summary,
-        args,
-        {
-            "window": window,
-            "model": "dmfm",
-            "artifact_dir": str(artifact_dir),
-            "output_dir": str(out_dir),
-            "extra_analysis": args.extra_analysis,
-            "metrics_json": str(out_dir / "metrics.json"),
-            "portfolio_json": str(out_dir / "portfolio.json"),
-            "plots_dir": str(out_dir / "plots"),
-        },
-    )
-
-
 def run_factor_variant(py: str, window: str, artifact_dir: Path, variant: str, args, summary: Dict[str, object]):
     out_dir = Path(args.output_root) / window / variant
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -714,8 +453,7 @@ def parse_args():
         "--models",
         default="all",
         help=(
-            "comma list: baseline,gat,dmfm,factor_variants,"
-            "mlp,gat_industry,gat_universe,gat_two_graph_no_neutral,"
+            "comma list: baseline,factor_variants,mlp,gat_industry,gat_universe,gat_two_graph_no_neutral,"
             "dmfm_ind_neutral,dmfm_full,all"
         ),
     )
@@ -777,7 +515,6 @@ def parse_args():
     ap.add_argument("--skip_build", action="store_true")
     ap.add_argument("--skip_train", action="store_true")
     ap.add_argument("--rebuild_artifacts", action="store_true")
-    ap.add_argument("--extra_analysis", action="store_true", help="Run DMFM attention/context analysis")
     ap.add_argument("--dry_run", action="store_true")
     return ap.parse_args()
 
@@ -910,18 +647,6 @@ def main():
                         lambda window=window, artifact_dir=artifact_dir, bm=bm, current_args=current_args:
                         run_baseline(py, window, artifact_dir, bm, current_args, summary)
                     )
-
-            if "gat" in models:
-                tasks.append(
-                    lambda window=window, artifact_dir=artifact_dir, current_args=current_args:
-                    run_gat(py, window, artifact_dir, current_args, summary)
-                )
-
-            if "dmfm" in models:
-                tasks.append(
-                    lambda window=window, artifact_dir=artifact_dir, current_args=current_args:
-                    run_dmfm(py, window, artifact_dir, current_args, summary)
-                )
 
             for variant in FACTOR_MODELS:
                 if variant in models:
