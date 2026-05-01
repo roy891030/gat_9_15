@@ -94,6 +94,28 @@ python run_pipeline.py \
   --rebuild_artifacts
 ```
 
+RunPod 上用同一份 pipeline 統一比較 baseline / static graph / dynamic graph：
+
+```bash
+cd /workspace/gat_9_15
+python run_pipeline.py \
+  --models baseline,gat,dmfm,factor_variants \
+  --windows short,medium,long \
+  --mode full \
+  --device cuda \
+  --graph_modes static,dynamic \
+  --baseline_graph_mode static \
+  --artifact_root artifacts_unified \
+  --output_root runs_unified \
+  --rebuild_artifacts \
+  --parallel_jobs 2 \
+  --preload_gpu
+```
+
+- `--graph_modes static,dynamic` 會用同一組 `WINDOW_SPECS` 建立 `artifacts_unified/static/<window>` 與 `artifacts_unified/dynamic/<window>`，避免 static/dynamic 的時間窗口不一致。
+- baseline 不使用 graph，預設只跑在 `static` 口徑下；若需要兩邊都跑，改成 `--baseline_graph_mode both`。
+- RTX 4090 上建議先用 `--parallel_jobs 2`；若 VRAM 還有餘量再提高到 3。dynamic graph artifact 建構是 CPU/NumPy 工作，GPU 使用率低是正常的；GPU 主要用於 train/evaluation。
+
 RunPod smoke test：
 
 ```bash

@@ -39,6 +39,11 @@ def parse_args():
     ap.add_argument("--train_ratio", type=float, default=0.8)
     ap.add_argument("--val_ratio", type=float, default=0.1)
     ap.add_argument("--no_factor_attention", action="store_true")
+    ap.add_argument(
+        "--preload_gpu",
+        action="store_true",
+        help="Move Ft/yt tensors to CUDA once at startup to reduce per-day host->device copies.",
+    )
     return ap.parse_args()
 
 
@@ -117,6 +122,13 @@ def main():
         meta = pickle.load(f)
 
     T, N, F = Ft.shape
+    if args.preload_gpu and device.type == "cuda":
+        print("preload_gpu=True: moving Ft/yt tensors to CUDA")
+        Ft = Ft.to(device, non_blocking=True)
+        yt = yt.to(device, non_blocking=True)
+    elif args.preload_gpu:
+        print(f"preload_gpu=True ignored for device={device}")
+
     train_idx, val_idx, test_idx = time_split_indices_3(
         meta.get("dates", list(range(T))),
         train_ratio=args.train_ratio,
@@ -161,6 +173,7 @@ def main():
         "weight_decay": args.weight_decay,
         "lambda_attn": args.lambda_attn,
         "lambda_ic": args.lambda_ic,
+        "preload_gpu": bool(args.preload_gpu),
     }
 
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)

@@ -45,6 +45,11 @@ def parse_args():
     ap.add_argument("--patience", type=int, default=30, help="Early stopping 耐心值")
     ap.add_argument("--train_ratio", type=float, default=0.8, help="訓練集比例")
     ap.add_argument("--val_ratio", type=float, default=0.1, help="在 train 區段中劃給 validation 的比例")
+    ap.add_argument(
+        "--preload_gpu",
+        action="store_true",
+        help="Move Ft/yt tensors to CUDA once at startup to reduce per-day host->device copies.",
+    )
     return ap.parse_args()
 
 
@@ -432,6 +437,13 @@ def main():
         meta = pickle.load(f)
 
     T, N, F = Ft.shape
+    if args.preload_gpu and device.type == "cuda":
+        print("preload_gpu=True: moving Ft/yt tensors to CUDA")
+        Ft = Ft.to(device, non_blocking=True)
+        yt = yt.to(device, non_blocking=True)
+    elif args.preload_gpu:
+        print(f"preload_gpu=True ignored for device={device}")
+
     print(f"資料形狀: T={T}, N={N}, F={F}")
     print(f"產業圖邊數: {industry_ei.shape[1]:,}")
     print(f"全市場圖邊數: {universe_ei.shape[1]:,}")
@@ -481,6 +493,7 @@ def main():
         "weight_decay": args.weight_decay,
         "lambda_attn": args.lambda_attn,
         "lambda_ic": args.lambda_ic,
+        "preload_gpu": bool(args.preload_gpu),
     }
 
     # Optimizer

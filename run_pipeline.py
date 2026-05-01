@@ -9,6 +9,8 @@ Goals:
 """
 
 import argparse
+import copy
+import concurrent.futures
 import json
 import os
 import shutil
@@ -17,7 +19,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from graph_utils import dynamic_graph_files_exist
 
@@ -166,6 +168,18 @@ def run_cmd(cmd: List[str], log_path: Path, dry_run: bool = False):
         raise RuntimeError(f"Command failed ({proc.returncode}): {cmd_str}\nSee log: {log_path}")
 
 
+def graph_mode_from_args(args) -> str:
+    explicit = getattr(args, "graph_mode", None)
+    if explicit:
+        return explicit
+    return "static" if args.no_dynamic_graphs else "dynamic"
+
+
+def append_run(summary: Dict[str, object], args, record: Dict[str, object]):
+    record.setdefault("graph_mode", graph_mode_from_args(args))
+    summary["runs"].append(record)
+
+
 def ensure_artifact(
     py: str,
     window: str,
@@ -233,7 +247,11 @@ def ensure_artifact(
             ]
         )
     run_cmd(cmd, log_path=log_path, dry_run=args.dry_run)
-    summary["artifacts"][window] = str(artifact_dir)
+    graph_mode = getattr(args, "graph_mode", None)
+    if graph_mode:
+        summary["artifacts"].setdefault(graph_mode, {})[window] = str(artifact_dir)
+    else:
+        summary["artifacts"][window] = str(artifact_dir)
 
 
 def copy_json_artifact(src: Path, dst: Path, dry_run: bool = False):
@@ -328,7 +346,9 @@ def run_baseline(
     ]
     run_cmd(cmd_eval, log_path=out_dir / "backtest.log", dry_run=args.dry_run)
 
-    summary["runs"].append(
+    append_run(
+        summary,
+        args,
         {
             "window": window,
             "model": f"baseline_{baseline_model}",
@@ -337,7 +357,7 @@ def run_baseline(
             "metrics_json": str(baseline_metrics_dst),
             "portfolio_json": str(out_dir / "portfolio.json"),
             "plots_dir": str(out_dir / "plots"),
-        }
+        },
     )
 
 
@@ -380,6 +400,8 @@ def run_gat(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, o
             "--val_ratio",
             str(args.val_ratio),
         ]
+        if args.preload_gpu:
+            cmd_train.append("--preload_gpu")
         run_cmd(cmd_train, log_path=out_dir / "train.log", dry_run=args.dry_run)
     else:
         print(f"[skip-train] gat {window}")
@@ -431,7 +453,9 @@ def run_gat(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, o
     ]
     run_cmd(cmd_backtest, log_path=out_dir / "backtest.log", dry_run=args.dry_run)
 
-    summary["runs"].append(
+    append_run(
+        summary,
+        args,
         {
             "window": window,
             "model": "gat",
@@ -440,7 +464,7 @@ def run_gat(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, o
             "metrics_json": str(out_dir / "metrics.json"),
             "portfolio_json": str(out_dir / "portfolio.json"),
             "plots_dir": str(out_dir / "plots"),
-        }
+        },
     )
 
 
@@ -479,6 +503,8 @@ def run_dmfm(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, 
             "--val_ratio",
             str(args.val_ratio),
         ]
+        if args.preload_gpu:
+            cmd_train.append("--preload_gpu")
         run_cmd(cmd_train, log_path=out_dir / "train.log", dry_run=args.dry_run)
     else:
         print(f"[skip-train] dmfm {window}")
@@ -561,7 +587,9 @@ def run_dmfm(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, 
         ]
         run_cmd(cmd_ctx, log_path=out_dir / "contexts.log", dry_run=args.dry_run)
 
-    summary["runs"].append(
+    append_run(
+        summary,
+        args,
         {
             "window": window,
             "model": "dmfm",
@@ -571,7 +599,7 @@ def run_dmfm(py: str, window: str, artifact_dir: Path, args, summary: Dict[str, 
             "metrics_json": str(out_dir / "metrics.json"),
             "portfolio_json": str(out_dir / "portfolio.json"),
             "plots_dir": str(out_dir / "plots"),
-        }
+        },
     )
 
 
@@ -612,6 +640,8 @@ def run_factor_variant(py: str, window: str, artifact_dir: Path, variant: str, a
             "--val_ratio",
             str(args.val_ratio),
         ]
+        if args.preload_gpu:
+            cmd_train.append("--preload_gpu")
         run_cmd(cmd_train, log_path=out_dir / "train.log", dry_run=args.dry_run)
     else:
         print(f"[skip-train] {variant} {window}")
@@ -663,7 +693,9 @@ def run_factor_variant(py: str, window: str, artifact_dir: Path, variant: str, a
     ]
     run_cmd(cmd_backtest, log_path=out_dir / "backtest.log", dry_run=args.dry_run)
 
-    summary["runs"].append(
+    append_run(
+        summary,
+        args,
         {
             "window": window,
             "model": variant,
@@ -672,7 +704,7 @@ def run_factor_variant(py: str, window: str, artifact_dir: Path, variant: str, a
             "metrics_json": str(out_dir / "metrics.json"),
             "portfolio_json": str(out_dir / "portfolio.json"),
             "plots_dir": str(out_dir / "plots"),
-        }
+        },
     )
 
 
@@ -697,6 +729,23 @@ def parse_args():
         default="all",
         help="comma list: short,medium,long,all",
     )
+    ap.add_argument(
+        "--graph_modes",
+        default="",
+        help=(
+            "comma list: static,dynamic. When set, the same windows/models are run under "
+            "separate artifact/output subfolders so static and dynamic graph results share one summary."
+        ),
+    )
+    ap.add_argument(
+        "--baseline_graph_mode",
+        default="static",
+        choices=["static", "dynamic", "both"],
+        help=(
+            "When --graph_modes is set and baseline is selected, choose where to run baselines. "
+            "Use static by default because baselines do not consume graph edges."
+        ),
+    )
     ap.add_argument("--mode", choices=["smoke", "full"], default="full")
     ap.add_argument("--prices", default="unique_2019q3to2025q3.csv")
     ap.add_argument("--industry_csv", default="unique_2019q3to2025q3.csv")
@@ -714,12 +763,68 @@ def parse_args():
     ap.add_argument("--train_ratio", type=float, default=0.8)
     ap.add_argument("--val_ratio", type=float, default=0.1)
     ap.add_argument("--device", default="auto")
+    ap.add_argument(
+        "--parallel_jobs",
+        type=int,
+        default=1,
+        help="Number of model subprocesses to run concurrently after artifacts are built.",
+    )
+    ap.add_argument(
+        "--preload_gpu",
+        action="store_true",
+        help="For graph neural models, move Ft/yt tensors to CUDA once at startup to reduce per-day transfer overhead.",
+    )
     ap.add_argument("--skip_build", action="store_true")
     ap.add_argument("--skip_train", action="store_true")
     ap.add_argument("--rebuild_artifacts", action="store_true")
     ap.add_argument("--extra_analysis", action="store_true", help="Run DMFM attention/context analysis")
     ap.add_argument("--dry_run", action="store_true")
     return ap.parse_args()
+
+
+def parse_graph_modes(args) -> List[Optional[str]]:
+    if not args.graph_modes.strip():
+        return [None]
+    modes = parse_csv_list(args.graph_modes, ["static", "dynamic"], allow_all=False)
+    if args.no_dynamic_graphs and "dynamic" in modes:
+        print("[warn] --graph_modes overrides --no_dynamic_graphs; dynamic mode will still build dynamic graph artifacts")
+    return modes
+
+
+def mode_args(args, graph_mode: Optional[str]):
+    if graph_mode is None:
+        return args
+    out = copy.copy(args)
+    out.graph_mode = graph_mode
+    out.no_dynamic_graphs = graph_mode == "static"
+    out.output_root = str(Path(args.output_root) / graph_mode)
+    return out
+
+
+def artifact_dir_for_mode(args, graph_mode: Optional[str], window: str) -> Path:
+    root = Path(args.artifact_root)
+    if graph_mode is None:
+        return root / window
+    return root / graph_mode / window
+
+
+def baseline_enabled_for_mode(args, graph_mode: Optional[str]) -> bool:
+    if graph_mode is None or not args.graph_modes.strip():
+        return True
+    return args.baseline_graph_mode == "both" or args.baseline_graph_mode == graph_mode
+
+
+def run_tasks(tasks: List[Callable[[], None]], parallel_jobs: int, dry_run: bool = False):
+    if parallel_jobs <= 1 or len(tasks) <= 1 or dry_run:
+        for task in tasks:
+            task()
+        return
+
+    print(f"\n[parallel] running {len(tasks)} model tasks with parallel_jobs={parallel_jobs}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=parallel_jobs) as pool:
+        futures = [pool.submit(task) for task in tasks]
+        for fut in concurrent.futures.as_completed(futures):
+            fut.result()
 
 
 def main():
@@ -731,6 +836,18 @@ def main():
     models = parse_model_list(args.models)
     windows = parse_csv_list(args.windows, ["short", "medium", "long"])
     baseline_models = parse_csv_list(args.baseline_models, ["linear", "xgboost", "lstm"])
+    graph_modes = parse_graph_modes(args)
+    if (
+        args.graph_modes.strip()
+        and args.baseline_graph_mode != "both"
+        and args.baseline_graph_mode not in graph_modes
+    ):
+        fallback_mode = graph_modes[0]
+        print(
+            f"[warn] baseline_graph_mode={args.baseline_graph_mode!r} is not selected in "
+            f"graph_modes={graph_modes}; baselines will run under {fallback_mode!r}."
+        )
+        args.baseline_graph_mode = fallback_mode
 
     artifact_root = Path(args.artifact_root)
     output_root = Path(args.output_root)
@@ -742,13 +859,17 @@ def main():
         "models": models,
         "baseline_models": baseline_models,
         "windows": windows,
+        "graph_modes": [m if m is not None else graph_mode_from_args(args) for m in graph_modes],
+        "baseline_graph_mode": args.baseline_graph_mode if args.graph_modes.strip() else None,
         "train_ratio": args.train_ratio,
         "val_ratio": args.val_ratio,
-        "dynamic_graphs": not args.no_dynamic_graphs,
+        "dynamic_graphs": not args.no_dynamic_graphs if not args.graph_modes.strip() else ("dynamic" in graph_modes),
         "graph_lookback": args.graph_lookback,
         "graph_min_obs": args.graph_min_obs,
         "industry_top_k": args.industry_top_k,
         "universe_top_k": args.universe_top_k,
+        "parallel_jobs": args.parallel_jobs,
+        "preload_gpu": args.preload_gpu,
         "artifacts": {},
         "runs": [],
         "dry_run": args.dry_run,
@@ -758,36 +879,58 @@ def main():
     print("Unified Pipeline")
     print("=" * 72)
     print(f"mode={args.mode} models={models} windows={windows} device={args.device}")
+    print(f"graph_modes={summary['graph_modes']} baseline_graph_mode={summary['baseline_graph_mode']}")
     print(f"artifact_root={artifact_root} output_root={output_root}")
     print(
-        f"dynamic_graphs={not args.no_dynamic_graphs} "
+        f"dynamic_graphs={summary['dynamic_graphs']} "
         f"lookback={args.graph_lookback} min_obs={args.graph_min_obs} "
         f"industry_top_k={args.industry_top_k} universe_top_k={args.universe_top_k}"
     )
-    print(f"skip_build={args.skip_build} skip_train={args.skip_train} dry_run={args.dry_run}")
+    print(
+        f"parallel_jobs={args.parallel_jobs} preload_gpu={args.preload_gpu} "
+        f"skip_build={args.skip_build} skip_train={args.skip_train} dry_run={args.dry_run}"
+    )
 
+    tasks: List[Callable[[], None]] = []
     for window in windows:
         spec = WINDOW_SPECS[window]
-        artifact_dir = artifact_root / window
-        print(f"\n{'-' * 72}")
-        print(f"Window: {window} ({spec['start']} ~ {spec['end']})")
-        print(f"{'-' * 72}")
+        for graph_mode in graph_modes:
+            current_args = mode_args(args, graph_mode)
+            artifact_dir = artifact_dir_for_mode(args, graph_mode, window)
+            mode_label = graph_mode_from_args(current_args)
+            print(f"\n{'-' * 72}")
+            print(f"Window: {window} ({spec['start']} ~ {spec['end']}) | graph_mode={mode_label}")
+            print(f"{'-' * 72}")
 
-        ensure_artifact(py, window, spec, args, artifact_dir, summary)
+            ensure_artifact(py, window, spec, current_args, artifact_dir, summary)
 
-        if "baseline" in models:
-            for bm in baseline_models:
-                run_baseline(py, window, artifact_dir, bm, args, summary)
+            if "baseline" in models and baseline_enabled_for_mode(args, graph_mode):
+                for bm in baseline_models:
+                    tasks.append(
+                        lambda window=window, artifact_dir=artifact_dir, bm=bm, current_args=current_args:
+                        run_baseline(py, window, artifact_dir, bm, current_args, summary)
+                    )
 
-        if "gat" in models:
-            run_gat(py, window, artifact_dir, args, summary)
+            if "gat" in models:
+                tasks.append(
+                    lambda window=window, artifact_dir=artifact_dir, current_args=current_args:
+                    run_gat(py, window, artifact_dir, current_args, summary)
+                )
 
-        if "dmfm" in models:
-            run_dmfm(py, window, artifact_dir, args, summary)
+            if "dmfm" in models:
+                tasks.append(
+                    lambda window=window, artifact_dir=artifact_dir, current_args=current_args:
+                    run_dmfm(py, window, artifact_dir, current_args, summary)
+                )
 
-        for variant in FACTOR_MODELS:
-            if variant in models:
-                run_factor_variant(py, window, artifact_dir, variant, args, summary)
+            for variant in FACTOR_MODELS:
+                if variant in models:
+                    tasks.append(
+                        lambda window=window, artifact_dir=artifact_dir, variant=variant, current_args=current_args:
+                        run_factor_variant(py, window, artifact_dir, variant, current_args, summary)
+                    )
+
+    run_tasks(tasks, args.parallel_jobs, dry_run=args.dry_run)
 
     summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
     summary_path = output_root / "run_summary.json"

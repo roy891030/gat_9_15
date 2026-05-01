@@ -503,6 +503,8 @@ if __name__ == "__main__":
                     help="train+val 的切分比例（test 從此比例之後開始）")
     ap.add_argument("--val_ratio", type=float, default=0.1,
                     help="在 train 區段中劃給 validation 的比例")
+    ap.add_argument("--preload_gpu", action="store_true",
+                    help="Accepted for pipeline compatibility; train_gat_fixed already keeps Ft/yt on the selected device.")
     
     args = ap.parse_args()
 
