@@ -1,0 +1,7 @@
+window,graph_mode,n_models,test_IC_winner,test_IC_best,strategy_total_return_winner,strategy_total_return_best,strategy_sharpe_winner,strategy_sharpe_best,excess_total_return_winner,excess_total_return_best
+short,static,9,gat_universe,0.08429327805173988,gat_universe,0.3213242445989235,gat_universe,7.8317496483930515,gat_universe,0.11161706947634098
+short,dynamic,6,gat_universe,0.0812263951468399,dmfm_full,0.2765703652505125,gat_two_graph_no_neutral,7.318003598953495,dmfm_full,0.06686319012792996
+medium,static,9,gat_industry,0.09333417448660658,gat_two_graph_no_neutral,0.3612211041330726,gat_industry,1.831654427994656,gat_two_graph_no_neutral,0.43607261931815056
+medium,dynamic,6,gat_two_graph_no_neutral,0.08925152571668898,gat_universe,0.38309651735057093,gat_universe,1.8662487322019796,gat_universe,0.45794803253564886
+long,static,9,gat_two_graph_no_neutral,0.08935146677238902,dmfm_full,0.5432329720720892,dmfm_full,1.4904920506120516,dmfm_full,0.36085891752261046
+long,dynamic,6,gat_universe,0.0955445625920323,gat_two_graph_no_neutral,0.5159346496836514,gat_two_graph_no_neutral,1.3784562488622918,gat_two_graph_no_neutral,0.3335605951341727
