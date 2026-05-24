@@ -240,11 +240,18 @@ def compute_features_one(g: pd.DataFrame, cm: Dict[str,str]) -> pd.DataFrame:
     roll_max_20_price = close.rolling(20, min_periods=20).max()
     mdd_20 = (close/roll_max_20_price - 1.0)
 
-    # beta_60 與 idio_vol_60（簡化版）
-    ret1_center = ret1 - ret1.rolling(60, min_periods=60).mean()
-    beta_60 = ret1.rolling(60, min_periods=60).cov(ret1_center) / ret1.rolling(60, min_periods=60).var()
-    resid_60 = ret1 - (beta_60 * ret1_center)
-    idio_vol_60 = resid_60.rolling(60, min_periods=60).std()
+    # beta_60 與 idio_vol_60（市場模型版：以截面等權報酬為市場代理）
+    if "_mkt_ret" in g.columns and g["_mkt_ret"].notna().any():
+        mkt = g["_mkt_ret"]
+        cov_num = ret1.rolling(60, min_periods=60).cov(mkt)
+        var_mkt = mkt.rolling(60, min_periods=60).var()
+        beta_60 = cov_num / var_mkt.replace(0, np.nan)
+        resid_60 = ret1 - beta_60 * mkt
+        idio_vol_60 = resid_60.rolling(60, min_periods=60).std()
+    else:
+        # fallback: 市場代理不可用時以 NaN 填充
+        beta_60 = pd.Series(np.nan, index=g.index)
+        idio_vol_60 = pd.Series(np.nan, index=g.index)
 
     # Amihud illiquidity（|ret|/value；優先用成交流水）
     turn_col = cm.get("turnk")
@@ -320,6 +327,12 @@ def build_features_and_label(df: pd.DataFrame, cm: Dict[str,str], horizon: int) 
     if cm["pb_raw"] in df.columns: df["pb"] = df[cm["pb_raw"]]
     if cm["ps_raw"] in df.columns: df["ps"] = df[cm["ps_raw"]]
 
+    # ✅ 預先計算每日截面等權市場報酬，供 beta_60 / idio_vol_60 使用
+    df["_ret1_tmp"] = df.groupby(cm["code"])[cm["close"]].pct_change(1)
+    mkt_ret_daily = df.groupby(cm["date"])["_ret1_tmp"].mean()
+    df["_mkt_ret"] = df[cm["date"]].map(mkt_ret_daily)
+    df = df.drop(columns=["_ret1_tmp"])
+
     # 每檔計算因子
     feats_list = [compute_features_one(g, cm) for _, g in df.groupby(cm["code"], sort=False)]
     feats = pd.concat(feats_list, axis=0).sort_index()
@@ -357,27 +370,26 @@ def to_tensors(df: pd.DataFrame, cm: Dict[str,str], feature_cols: List[str], sta
     df["t_idx"] = pd.Categorical(df[cm["date"]], categories=dates, ordered=True).codes
     df["s_idx"] = pd.Categorical(df[cm["code"]].astype(str), categories=stocks, ordered=True).codes
 
+    # ✅ 效能優化：一次性 numpy scatter 取代 56 次 pivot_table
+    t_idx_arr = df["t_idx"].values.astype(int)
+    s_idx_arr = df["s_idx"].values.astype(int)
+    feat_arr  = df[feature_cols].values.astype(np.float32)   # shape (rows, F)
+
     Ft = np.full((T, N, F), np.nan, dtype=np.float32)
-    for k, feat in enumerate(feature_cols):
-        piv = df.pivot_table(index="t_idx", columns="s_idx", values=feat, aggfunc="first")
-        A = np.full((T, N), np.nan, dtype=np.float32)
-        if not piv.empty:
-            A[piv.index.values[:,None], piv.columns.values[None,:]] = piv.values
+    Ft[t_idx_arr, s_idx_arr] = feat_arr  # scatter all F features in one pass
 
-        # ✅ 關鍵修正：每日截面標準化（跨股票）
-        A_zscore = xsec_zscore(A)  # 這個函數你已經有了（第 67 行）
-        Ft[:,:,k] = np.nan_to_num(A_zscore, nan=0.0, posinf=0.0, neginf=0.0)
+    # 每日截面標準化（跨股票）
+    for k in range(F):
+        A_zscore = xsec_zscore(Ft[:, :, k])
+        Ft[:, :, k] = np.nan_to_num(A_zscore, nan=0.0, posinf=0.0, neginf=0.0)
 
-    piv_y = df.pivot_table(index="t_idx", columns="s_idx", values="yt", aggfunc="first")
+    # Labels：同樣用 numpy scatter
     Y = np.full((T, N), np.nan, dtype=np.float32)
-    if not piv_y.empty:
-        Y[piv_y.index.values[:,None], piv_y.columns.values[None,:]] = piv_y.values
+    Y[t_idx_arr, s_idx_arr] = df["yt"].values.astype(np.float32)
 
     # 原始 forward return（未做每日去均值），供回測/基準比較使用
-    piv_yraw = df.pivot_table(index="t_idx", columns="s_idx", values="fwd_ret_k", aggfunc="first")
     Y_raw = np.full((T, N), np.nan, dtype=np.float32)
-    if not piv_yraw.empty:
-        Y_raw[piv_yraw.index.values[:,None], piv_yraw.columns.values[None,:]] = piv_yraw.values
+    Y_raw[t_idx_arr, s_idx_arr] = df["fwd_ret_k"].values.astype(np.float32)
 
     return (
         torch.from_numpy(Ft).to(torch.float32),
