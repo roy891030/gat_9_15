@@ -20,7 +20,8 @@
 - `dynamic_*_edge_attrs.pt`
 - `meta.pkl`
 """
-import argparse, json, os, pickle
+import argparse, json, os, pickle, time
+from contextlib import contextmanager
 from typing import List, Dict, Tuple
 import warnings
 
@@ -55,7 +56,45 @@ def parse_args():
                     help="Max non-self same-industry neighbors per target in dynamic industry graph")
     ap.add_argument("--universe_top_k", type=int, default=40,
                     help="Max non-self market neighbors per target in dynamic universe graph")
+    ap.add_argument("--cache_parquet", action="store_true",
+                    help="For CSV inputs, create/use a sibling parquet cache when possible")
     return ap.parse_args()
+
+
+@contextmanager
+def timed_stage(name: str):
+    t0 = time.perf_counter()
+    print(f"[timing] stage={name} started_at={time.strftime('%Y-%m-%dT%H:%M:%S')}")
+    try:
+        yield
+    finally:
+        print(f"[timing] stage={name} duration_sec={time.perf_counter() - t0:.3f}")
+
+
+def read_prices_table(path: str, cache_parquet: bool = False) -> pd.DataFrame:
+    src = os.fspath(path)
+    ext = os.path.splitext(src)[1].lower()
+    if ext in {".parquet", ".pq"}:
+        return pd.read_parquet(src)
+
+    if not cache_parquet:
+        return pd.read_csv(src)
+
+    cache_path = os.path.splitext(src)[0] + ".parquet"
+    try:
+        if os.path.exists(cache_path) and os.path.getmtime(cache_path) >= os.path.getmtime(src):
+            print(f"[cache] read parquet cache: {cache_path}")
+            return pd.read_parquet(cache_path)
+    except Exception as e:
+        print(f"[warn] parquet cache read skipped: {e}")
+
+    df = pd.read_csv(src)
+    try:
+        print(f"[cache] write parquet cache: {cache_path}")
+        df.to_parquet(cache_path, index=False)
+    except Exception as e:
+        print(f"[warn] parquet cache write skipped: {e}")
+    return df
 
 # ---------------- Column maps (ZH/EN) ----------------
 COLMAPS: List[Dict[str, str]] = [
@@ -528,45 +567,52 @@ def build_dynamic_weighted_graphs(df, cm, dates, stocks, lookback, min_obs, indu
 
 # ---------------- Main ----------------
 def main():
+    total_t0 = time.perf_counter()
     args = parse_args()
     os.makedirs(args.artifact_dir, exist_ok=True)
 
     # 讀取資料
-    df = pd.read_csv(args.prices)
+    with timed_stage("read_prices"):
+        df = read_prices_table(args.prices, cache_parquet=args.cache_parquet)
     cm = choose_colmap(df)
     df[cm["date"]] = to_dt(df[cm["date"]])
 
     # 驗證產業檔案存在（若有指定）
-    if args.industry_csv and os.path.abspath(args.industry_csv) != os.path.abspath(args.prices):
-        _ = pd.read_csv(args.industry_csv)  # 只驗存在
+    with timed_stage("validate_industry_csv"):
+        if args.industry_csv and os.path.abspath(args.industry_csv) != os.path.abspath(args.prices):
+            _ = read_prices_table(args.industry_csv, cache_parquet=args.cache_parquet)  # 只驗存在
 
     # 建立特徵與標籤
-    df_b, feature_cols = build_features_and_label(df, cm, args.horizon)
+    with timed_stage("build_features_and_label"):
+        df_b, feature_cols = build_features_and_label(df, cm, args.horizon)
     
     # 轉換為張量
-    Ft_t, Y_t, Y_raw_t, dates, stocks = to_tensors(df_b, cm, feature_cols, args.start_date, args.end_date)
+    with timed_stage("to_tensors"):
+        Ft_t, Y_t, Y_raw_t, dates, stocks = to_tensors(df_b, cm, feature_cols, args.start_date, args.end_date)
     
     # 建立兩種圖結構
-    industry_edge_index = build_industry_edges(df_b, cm, stocks)      # 產業圖
-    universe_edge_index = build_universe_edges(stocks)                # 全市場圖
+    with timed_stage("build_static_graphs"):
+        industry_edge_index = build_industry_edges(df_b, cm, stocks)      # 產業圖
+        universe_edge_index = build_universe_edges(stocks)                # 全市場圖
     dynamic_graph_stats = None
     if not args.no_dynamic_graphs:
         print("建立 dynamic weighted graphs...")
-        (
-            dynamic_industry_edge_indices,
-            dynamic_industry_edge_attrs,
-            dynamic_universe_edge_indices,
-            dynamic_universe_edge_attrs,
-        ) = build_dynamic_weighted_graphs(
-            df_b,
-            cm,
-            dates,
-            stocks,
-            lookback=args.graph_lookback,
-            min_obs=args.graph_min_obs,
-            industry_top_k=args.industry_top_k,
-            universe_top_k=args.universe_top_k,
-        )
+        with timed_stage("build_dynamic_weighted_graphs"):
+            (
+                dynamic_industry_edge_indices,
+                dynamic_industry_edge_attrs,
+                dynamic_universe_edge_indices,
+                dynamic_universe_edge_attrs,
+            ) = build_dynamic_weighted_graphs(
+                df_b,
+                cm,
+                dates,
+                stocks,
+                lookback=args.graph_lookback,
+                min_obs=args.graph_min_obs,
+                industry_top_k=args.industry_top_k,
+                universe_top_k=args.universe_top_k,
+            )
         dynamic_graph_stats = {
             "enabled": True,
             "edge_dim": 2,
@@ -586,46 +632,49 @@ def main():
         dynamic_graph_stats = {"enabled": False}
 
     # 儲存所有 artifacts
-    torch.save(Ft_t, os.path.join(args.artifact_dir, "Ft_tensor.pt"))
-    torch.save(Y_t , os.path.join(args.artifact_dir, "yt_tensor.pt"))
-    torch.save(Y_raw_t, os.path.join(args.artifact_dir, "yraw_tensor.pt"))
-    torch.save(industry_edge_index, os.path.join(args.artifact_dir, "industry_edge_index.pt"))
-    torch.save(universe_edge_index, os.path.join(args.artifact_dir, "universe_edge_index.pt"))  # 新增
-    if dynamic_graph_stats.get("enabled"):
-        torch.save(dynamic_industry_edge_indices, os.path.join(args.artifact_dir, INDUSTRY_EDGE_INDICES))
-        torch.save(dynamic_industry_edge_attrs, os.path.join(args.artifact_dir, INDUSTRY_EDGE_ATTRS))
-        torch.save(dynamic_universe_edge_indices, os.path.join(args.artifact_dir, UNIVERSE_EDGE_INDICES))
-        torch.save(dynamic_universe_edge_attrs, os.path.join(args.artifact_dir, UNIVERSE_EDGE_ATTRS))
-        with open(os.path.join(args.artifact_dir, DYNAMIC_GRAPH_META), "w", encoding="utf-8") as f:
-            json.dump(dynamic_graph_stats, f, ensure_ascii=False, indent=2)
-    else:
-        for stale_name in (
-            INDUSTRY_EDGE_INDICES,
-            INDUSTRY_EDGE_ATTRS,
-            UNIVERSE_EDGE_INDICES,
-            UNIVERSE_EDGE_ATTRS,
-            DYNAMIC_GRAPH_META,
-        ):
-            stale_path = os.path.join(args.artifact_dir, stale_name)
-            if os.path.exists(stale_path):
-                os.remove(stale_path)
-    
-    # 儲存 metadata
-    meta = {
-        "feature_cols": feature_cols, 
-        "dates": dates, 
-        "stocks": stocks,
-        "horizon": args.horizon, 
-        "column_map": cm,
-        "raw_label_col": "fwd_ret_k",
-        "num_stocks": len(stocks),                          # 新增：股票數量
-        "num_features": len(feature_cols),                  # 新增：特徵數量
-        "num_industry_edges": industry_edge_index.shape[1], # 新增：產業圖邊數
-        "num_universe_edges": universe_edge_index.shape[1], # 新增：全市場圖邊數
-        "dynamic_graphs": dynamic_graph_stats,
-    }
-    with open(os.path.join(args.artifact_dir, "meta.pkl"), "wb") as f: 
-        pickle.dump(meta, f)
+    with timed_stage("save_artifacts"):
+        torch.save(Ft_t, os.path.join(args.artifact_dir, "Ft_tensor.pt"))
+        torch.save(Y_t , os.path.join(args.artifact_dir, "yt_tensor.pt"))
+        torch.save(Y_raw_t, os.path.join(args.artifact_dir, "yraw_tensor.pt"))
+        torch.save(industry_edge_index, os.path.join(args.artifact_dir, "industry_edge_index.pt"))
+        torch.save(universe_edge_index, os.path.join(args.artifact_dir, "universe_edge_index.pt"))  # 新增
+        if dynamic_graph_stats.get("enabled"):
+            torch.save(dynamic_industry_edge_indices, os.path.join(args.artifact_dir, INDUSTRY_EDGE_INDICES))
+            torch.save(dynamic_industry_edge_attrs, os.path.join(args.artifact_dir, INDUSTRY_EDGE_ATTRS))
+            torch.save(dynamic_universe_edge_indices, os.path.join(args.artifact_dir, UNIVERSE_EDGE_INDICES))
+            torch.save(dynamic_universe_edge_attrs, os.path.join(args.artifact_dir, UNIVERSE_EDGE_ATTRS))
+            with open(os.path.join(args.artifact_dir, DYNAMIC_GRAPH_META), "w", encoding="utf-8") as f:
+                json.dump(dynamic_graph_stats, f, ensure_ascii=False, indent=2)
+        else:
+            for stale_name in (
+                INDUSTRY_EDGE_INDICES,
+                INDUSTRY_EDGE_ATTRS,
+                UNIVERSE_EDGE_INDICES,
+                UNIVERSE_EDGE_ATTRS,
+                DYNAMIC_GRAPH_META,
+            ):
+                stale_path = os.path.join(args.artifact_dir, stale_name)
+                if os.path.exists(stale_path):
+                    os.remove(stale_path)
+
+        # 儲存 metadata
+        meta = {
+            "feature_cols": feature_cols,
+            "dates": dates,
+            "stocks": stocks,
+            "horizon": args.horizon,
+            "column_map": cm,
+            "raw_label_col": "fwd_ret_k",
+            "num_stocks": len(stocks),                          # 新增：股票數量
+            "num_features": len(feature_cols),                  # 新增：特徵數量
+            "num_industry_edges": industry_edge_index.shape[1], # 新增：產業圖邊數
+            "num_universe_edges": universe_edge_index.shape[1], # 新增：全市場圖邊數
+            "dynamic_graphs": dynamic_graph_stats,
+            "cache_parquet": bool(args.cache_parquet),
+            "source_prices": args.prices,
+        }
+        with open(os.path.join(args.artifact_dir, "meta.pkl"), "wb") as f:
+            pickle.dump(meta, f)
 
     # 輸出摘要資訊
     print("=" * 60)
@@ -674,6 +723,7 @@ def main():
     print(f" - 產業圖: {industry_mem_mb:.1f} MB")
     print(f" - 全市場圖: {universe_mem_mb:.1f} MB")
     print(f" - 總計約: {total_mem_mb:.1f} MB")
+    print(f" - Artifact build total time: {time.perf_counter() - total_t0:.1f}s")
     
     print("\n特徵列表 (n={}):".format(len(feature_cols)))
     # 按類別分組顯示特徵
