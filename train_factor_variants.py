@@ -215,7 +215,7 @@ def main():
             device,
         )
 
-        if epoch % 5 == 0 or epoch == args.epochs:
+        if epoch % 2 == 0 or epoch == args.epochs:
             eval_metrics = evaluate(model, Ft, yt, industry_ei, universe_ei, monitor_indices, device, dynamic_graphs)
             print(
                 f"Epoch {epoch:3d} | Train Loss: {train_metrics['loss']:.4f} | "

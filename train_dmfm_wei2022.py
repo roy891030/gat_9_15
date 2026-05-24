@@ -399,6 +399,8 @@ def evaluate(model, Ft, yt, industry_ei, universe_ei, test_indices, device, dyna
         # 計算指標
         ic = compute_ic(deep_factor, y_t)
         b = cross_sectional_regression(deep_factor, y_t)
+        # 截斷 b 以防 factor variance 崩潰時爆炸（與 compute_loss 中的 torch.clamp 一致）
+        b = max(min(b, 10.0), -10.0)
 
         all_ics.append(ic)
         all_factor_returns.append(b)
@@ -534,8 +536,8 @@ def main():
             train_indices, args.lambda_attn, args.lambda_ic, args.lambda_b, device
         )
 
-        # 評估
-        if epoch % 5 == 0 or epoch == args.epochs:
+        # 評估（每 2 個 epoch 評估一次，讓 best-checkpoint 定位更精確）
+        if epoch % 2 == 0 or epoch == args.epochs:
             eval_metrics = evaluate(
                 model, Ft, yt, industry_ei, universe_ei, monitor_indices, device, dynamic_graphs
             )

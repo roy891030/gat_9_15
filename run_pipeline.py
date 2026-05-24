@@ -31,7 +31,7 @@ from graph_utils import dynamic_graph_files_exist
 WINDOW_SPECS: Dict[str, Dict[str, str]] = {
     "short": {"start": "2019-09-16", "end": "2020-12-31"},
     "medium": {"start": "2019-09-16", "end": "2022-12-31"},
-    "long": {"start": "2019-09-16", "end": "2025-09-12"},
+    "long": {"start": "2014-01-02", "end": "2025-12-31"},
 }
 
 FACTOR_MODELS = [
@@ -78,9 +78,12 @@ SMOKE_BASELINE = BaselineConfig(
 )
 
 FULL_DMFM_BY_WINDOW = {
-    "short": DMFMConfig(epochs=50, lr=1e-4, patience=20),
-    "medium": DMFMConfig(epochs=100, lr=1e-4, patience=30),
-    "long": DMFMConfig(epochs=100, lr=1e-4, patience=30),
+    "short":  DMFMConfig(epochs=50,  lr=1e-4,  patience=20),
+    "medium": DMFMConfig(epochs=100, lr=1e-4,  patience=30),
+    # Long window: 1062 stocks × 1460 days → heavy overfitting risk.
+    # Increase dropout (0.1→0.3) and reduce lr (1e-4→5e-5) to slow overfitting;
+    # patience=30 still reasonable (evaluating every 2 epochs = 60 epochs grace).
+    "long":   DMFMConfig(epochs=100, lr=5e-5, patience=30, dropout=0.3),
 }
 FULL_BASELINE = BaselineConfig(
     lstm_epochs=30,
