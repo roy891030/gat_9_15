@@ -154,9 +154,13 @@ def compute_metrics(preds: np.ndarray, truths: np.ndarray, days: List[str]):
         if sel.sum() < 3:
             continue
         c = safe_corr(preds[sel], truths[sel])
-        if c == c:
+        if np.isfinite(c):
             daily_ic.append(c)
-    icir = float(np.nanmean(daily_ic) / (np.nanstd(daily_ic) + 1e-8)) if daily_ic else np.nan
+    icir = (
+        float(np.mean(daily_ic) / (np.std(daily_ic, ddof=1) + 1e-8))
+        if len(daily_ic) > 1
+        else np.nan
+    )
     dir_acc = float((np.sign(preds) == np.sign(truths)).mean())
     out.update({
         "MSE": float(mse),
