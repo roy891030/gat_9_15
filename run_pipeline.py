@@ -451,6 +451,8 @@ def run_baseline(
             str(args.val_ratio),
             "--device",
             args.device,
+            "--seed",
+            str(args.seed),
         ]
         if baseline_model == "xgboost":
             cmd.extend(
@@ -551,12 +553,16 @@ def run_factor_variant(py: str, window: str, artifact_dir: Path, variant: str, a
             str(cfg.lambda_attn),
             "--lambda_ic",
             str(cfg.lambda_ic),
+            "--lambda_b",
+            str(args.lambda_b),
             "--patience",
             str(cfg.patience),
             "--train_ratio",
             str(args.train_ratio),
             "--val_ratio",
             str(args.val_ratio),
+            "--seed",
+            str(args.seed),
         ]
         if args.preload_gpu:
             cmd_train.append("--preload_gpu")
@@ -679,6 +685,8 @@ def parse_args():
     ap.add_argument("--rebalance_days", type=int, default=5)
     ap.add_argument("--train_ratio", type=float, default=0.8)
     ap.add_argument("--val_ratio", type=float, default=0.1)
+    ap.add_argument("--lambda_b", type=float, default=0.01, help="Factor return loss weight for DMFM/factor variants")
+    ap.add_argument("--seed", type=int, default=42, help="Random seed passed to training subprocesses")
     ap.add_argument("--device", default="auto")
     ap.add_argument(
         "--parallel_jobs",
@@ -794,6 +802,8 @@ def main():
         "baseline_graph_mode": args.baseline_graph_mode if args.graph_modes.strip() else None,
         "train_ratio": args.train_ratio,
         "val_ratio": args.val_ratio,
+        "lambda_b": args.lambda_b,
+        "seed": args.seed,
         "dynamic_graphs": not args.no_dynamic_graphs if not args.graph_modes.strip() else ("dynamic" in graph_modes),
         "graph_lookback": args.graph_lookback,
         "graph_min_obs": args.graph_min_obs,

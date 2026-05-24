@@ -188,16 +188,17 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
         x = Ft[t].to(device).float()
         y = yt[t].to(device)
         mask = torch.isfinite(y)
-        if mask.sum() == 0:
+        if mask.sum() < 3:
             continue
 
-        x = torch.nan_to_num(x, nan=0.0)
+        x = torch.nan_to_num(x[mask], nan=0.0)
+        yy = y[mask]
 
         industry_ei_t, industry_attr_t = graph_at(
-            dynamic_graphs, "industry", t, edge_industry, device=device
+            dynamic_graphs, "industry", t, edge_industry, mask=mask, device=device
         )
         universe_ei_t, universe_attr_t = graph_at(
-            dynamic_graphs, "universe", t, edge_universe, device=device
+            dynamic_graphs, "universe", t, edge_universe, mask=mask, device=device
         )
         p, attn_weights, contexts = forward_graph_model(
             model,
@@ -208,10 +209,7 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
             universe_attr_t,
         )
         if attn_weights is not None:
-            all_attentions.append(attn_weights[mask].detach().cpu().numpy())
-
-        p = p[mask]
-        yy = y[mask]
+            all_attentions.append(attn_weights.detach().cpu().numpy())
 
         # === 關鍵修正：強制壓成 1D array，避免 np.corrcoef 維度不匹配 ===
         P = p.detach().cpu().numpy().flatten()
@@ -221,7 +219,7 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
 
         # 每日 IC
         c = safe_corr(P, Y)
-        if c == c:
+        if np.isfinite(c):
             daily_ic.append(c)
 
         # 方向準確率
@@ -233,7 +231,7 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
             inds_t = inds_arr[sel]
             Pn, Yn = industry_residuals(P, Y, inds_t)
             cn = safe_corr(Pn, Yn)
-            if cn == cn:
+            if np.isfinite(cn):
                 daily_ic_ind.append(cn)
             resP_all.append(Pn)
             resY_all.append(Yn)

@@ -505,8 +505,14 @@ if __name__ == "__main__":
                     help="在 train 區段中劃給 validation 的比例")
     ap.add_argument("--preload_gpu", action="store_true",
                     help="Accepted for backward-compatible launcher commands; train_gat_fixed already keeps Ft/yt on the selected device.")
+    ap.add_argument("--seed", type=int, default=42,
+                    help="Random seed for reproducible training")
     
     args = ap.parse_args()
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     # 解析裝置
     args.device = pick_device(args.device)

@@ -7,6 +7,7 @@ import argparse
 import os
 import pickle
 
+import numpy as np
 import torch
 import torch.optim as optim
 
@@ -35,9 +36,11 @@ def parse_args():
     ap.add_argument("--weight_decay", type=float, default=0.01)
     ap.add_argument("--lambda_attn", type=float, default=0.05)
     ap.add_argument("--lambda_ic", type=float, default=1.0)
+    ap.add_argument("--lambda_b", type=float, default=0.01)
     ap.add_argument("--patience", type=int, default=30)
     ap.add_argument("--train_ratio", type=float, default=0.8)
     ap.add_argument("--val_ratio", type=float, default=0.1)
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--no_factor_attention", action="store_true")
     ap.add_argument(
         "--preload_gpu",
@@ -47,8 +50,15 @@ def parse_args():
     return ap.parse_args()
 
 
+def set_random_seed(seed: int):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei, dynamic_graphs,
-                    train_indices, lambda_attn, lambda_ic, device):
+                    train_indices, lambda_attn, lambda_ic, lambda_b, device):
     model.train()
     metrics = {"loss": 0.0, "d_attn": 0.0, "b_factor": 0.0, "ic": 0.0}
     valid_steps = 0
@@ -81,7 +91,7 @@ def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei, dynamic_
             universe_attr_filtered,
         )
         f_hat = model.interpret_factor(x_t, attn_weights, x_norm=contexts.get("x_norm"))
-        loss, step_metrics = compute_loss(deep_factor, f_hat, y_t, lambda_attn, lambda_ic)
+        loss, step_metrics = compute_loss(deep_factor, f_hat, y_t, lambda_attn, lambda_ic, lambda_b)
         if torch.isnan(loss) or torch.isinf(loss):
             print(f"[warn] skip t={t}: NaN/Inf loss")
             continue
@@ -104,6 +114,7 @@ def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei, dynamic_
 
 def main():
     args = parse_args()
+    set_random_seed(args.seed)
     device = pick_device(args.device)
 
     print("=" * 60)
@@ -173,6 +184,8 @@ def main():
         "weight_decay": args.weight_decay,
         "lambda_attn": args.lambda_attn,
         "lambda_ic": args.lambda_ic,
+        "lambda_b": args.lambda_b,
+        "seed": args.seed,
         "preload_gpu": bool(args.preload_gpu),
     }
 
@@ -198,6 +211,7 @@ def main():
             train_idx,
             args.lambda_attn,
             args.lambda_ic,
+            args.lambda_b,
             device,
         )
 

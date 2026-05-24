@@ -17,18 +17,18 @@
 - `train_baselines.py`: 訓練 `linear / xgboost / lstm`
 - `evaluate_metrics.py`: 輸出 train / val / test 指標
 - `evaluate_portfolio.py`: 輸出回測與圖表
-- `visualize_factor_attention.py`: DMFM attention 視覺化
-- `analyze_contexts.py`: DMFM context 分析
 - `model_dmfm_wei2022.py`: 模型定義
+- `unused_not_main_pipeline/`: 不在主要 pipeline 中使用的舊分析、視覺化與實驗性程式
 
 ## 快速開始
 
-預設會建立 dynamic weighted graph：
+目前主要 pipeline 預設使用 static graph，並先建立一次 shared full artifact，再切出各 window view。
+
+Dynamic weighted graph 程式仍保留，但不作為目前主流程預設。若明確指定 `--graph_modes dynamic`，會建立：
 
 - Industry graph: 每日 rolling return correlation，同產業 top-k 加權邊
 - Universe graph: 每日 rolling return correlation，全市場 top-k 加權邊
 - Edge attribute: `[abs_corr, signed_corr]`
-- 舊 static binary graph 仍保留作 fallback；如果要強制不用 dynamic graph，加入 `--no_dynamic_graphs`
 
 使用專案 venv：
 
@@ -38,11 +38,7 @@
   --windows all \
   --mode full \
   --device cuda \
-  --rebuild_artifacts \
-  --graph_lookback 60 \
-  --graph_min_obs 20 \
-  --industry_top_k 20 \
-  --universe_top_k 40
+  --rebuild_artifacts
 ```
 
 只做 smoke test：
