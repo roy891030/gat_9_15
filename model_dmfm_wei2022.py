@@ -32,7 +32,7 @@ FACTOR_VARIANTS = (
     "dmfm_full",
 )
 
-__all__ = ['DMFM_Wei2022', 'GATRegressor', 'FactorGraphAblation', 'FACTOR_VARIANTS']
+__all__ = ['DMFM_Wei2022', 'DMFM_Lite', 'GATRegressor', 'FactorGraphAblation', 'FACTOR_VARIANTS']
 
 
 class DMFM_Wei2022(nn.Module):
@@ -265,6 +265,65 @@ class DMFM_Wei2022(nn.Module):
         # 平均所有股票的注意力權重 → 得到特徵重要性
         importance = attn_weights.mean(dim=0)  # [F]
         return importance
+
+
+class DMFM_Lite(nn.Module):
+    """
+    DMFM 的輕量版（用於記憶體受限的環境）
+
+    差異：
+    - 全市場圖使用 K-近鄰代替全連接
+    - 減少隱藏層維度
+    - 簡化 MLP 結構
+    """
+
+    def __init__(self,
+                 num_features: int,
+                 hidden_dim: int = 32,  # 減小隱藏層
+                 heads: int = 2,
+                 dropout: float = 0.0):
+        super().__init__()
+
+        self.num_features = num_features
+        self.hidden_dim = hidden_dim
+
+        # Encoder (簡化版)
+        self.batch_norm = nn.BatchNorm1d(num_features)
+        self.encoder = nn.Linear(num_features, hidden_dim)
+
+        # GAT (簡化版)
+        self.gat_industry = GATConv(hidden_dim, hidden_dim, heads=heads, concat=False, dropout=dropout)
+        self.gat_universe = GATConv(hidden_dim, hidden_dim, heads=heads, concat=False, dropout=dropout)
+
+        # Decoder (簡化版)
+        self.factor_decoder = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+        self.factor_attention = nn.Linear(num_features, num_features)
+
+    def forward(self, x, industry_edge_index, universe_edge_index):
+        """輕量版前向傳播"""
+        x_norm = self.batch_norm(x)
+        C = F.relu(self.encoder(x_norm))
+
+        H_I = F.elu(self.gat_industry(C, industry_edge_index))
+        C_I = C - H_I
+
+        H_U = F.elu(self.gat_universe(C_I, universe_edge_index))
+        C_U = C_I - H_U
+
+        hierarchical_features = torch.cat([C, C_I, C_U], dim=-1)
+        deep_factor = self.factor_decoder(hierarchical_features)
+
+        U = F.leaky_relu(self.factor_attention(x), negative_slope=0.2)
+        attn_weights = F.softmax(U, dim=-1)
+
+        contexts = {'C': C, 'C_I': C_I, 'C_U': C_U, 'H_I': H_I, 'H_U': H_U}
+
+        return deep_factor, attn_weights, contexts
 
 
 class FactorGraphAblation(nn.Module):

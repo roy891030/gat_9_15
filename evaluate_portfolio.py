@@ -242,21 +242,20 @@ def build_reports(artifact_dir, weights, out_dir,
             y = yt[t]
             mask = torch.isfinite(y)
             
-            if mask.sum() < 3:
+            if mask.sum() == 0:
                 daily_ic.append(np.nan)
                 daily_dir.append(np.nan)
                 pred_std.append(np.nan)
                 test_dates.append(dates_all[t])
                 continue
             
-            x = torch.nan_to_num(x[mask], nan=0.0)
-            yy = y[mask]
+            x = torch.nan_to_num(x, nan=0.0)
 
             industry_ei_t, industry_attr_t = graph_at(
-                dynamic_graphs, "industry", t, edge_industry, mask=mask, device=device
+                dynamic_graphs, "industry", t, edge_industry, device=device
             )
             universe_ei_t, universe_attr_t = graph_at(
-                dynamic_graphs, "universe", t, edge_universe, mask=mask, device=device
+                dynamic_graphs, "universe", t, edge_universe, device=device
             )
             p, attn_weights, contexts = forward_graph_model(
                 model,
@@ -267,10 +266,10 @@ def build_reports(artifact_dir, weights, out_dir,
                 universe_attr_t,
             )
             if attn_weights is not None and all_attentions is not None:
-                all_attentions.append(attn_weights.detach().cpu().numpy())
+                all_attentions.append(attn_weights[mask].detach().cpu().numpy())
 
-            P = p.detach().cpu().numpy().flatten()
-            Y = yy.detach().cpu().numpy().flatten()
+            P = p[mask].detach().cpu().numpy().flatten()  # ← 加 .flatten()
+            Y = y[mask].detach().cpu().numpy().flatten()  # ← 加 .flatten()
 
             all_predictions.append(P)
             all_labels.append(Y)
@@ -367,17 +366,16 @@ def build_reports(artifact_dir, weights, out_dir,
             y = yt[t]
             y_bt = y_backtest[t]
             mask = torch.isfinite(y) & torch.isfinite(y_bt)
-            if mask.sum() < 3:
+            if mask.sum() == 0:
                 continue
             
-            x = torch.nan_to_num(x[mask], nan=0.0)
-            yy_bt = y_bt[mask]
+            x = torch.nan_to_num(x, nan=0.0)
             
             industry_ei_t, industry_attr_t = graph_at(
-                dynamic_graphs, "industry", t, edge_industry, mask=mask, device=device
+                dynamic_graphs, "industry", t, edge_industry, device=device
             )
             universe_ei_t, universe_attr_t = graph_at(
-                dynamic_graphs, "universe", t, edge_universe, mask=mask, device=device
+                dynamic_graphs, "universe", t, edge_universe, device=device
             )
             p, _, _ = forward_graph_model(
                 model,
@@ -388,8 +386,9 @@ def build_reports(artifact_dir, weights, out_dir,
                 universe_attr_t,
             )
             
-            P = p.detach().cpu().numpy().flatten()
-            Y = yy_bt.detach().cpu().numpy().flatten()
+            # ✅ 修正：統一加 flatten()
+            P = p[mask].detach().cpu().numpy().flatten()
+            Y = y_bt[mask].detach().cpu().numpy().flatten()
             
             # 取前 top_pct
             qh = np.nanquantile(P, 1.0 - float(top_pct))

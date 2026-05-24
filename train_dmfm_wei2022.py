@@ -42,24 +42,15 @@ def parse_args():
     ap.add_argument("--weight_decay", type=float, default=0.01, help="權重衰減")
     ap.add_argument("--lambda_attn", type=float, default=0.05, help="注意力損失權重")
     ap.add_argument("--lambda_ic", type=float, default=1.0, help="IC 損失權重")
-    ap.add_argument("--lambda_b", type=float, default=0.01, help="Factor return 損失權重")
     ap.add_argument("--patience", type=int, default=30, help="Early stopping 耐心值")
     ap.add_argument("--train_ratio", type=float, default=0.8, help="訓練集比例")
     ap.add_argument("--val_ratio", type=float, default=0.1, help="在 train 區段中劃給 validation 的比例")
-    ap.add_argument("--seed", type=int, default=42, help="Random seed for reproducible training")
     ap.add_argument(
         "--preload_gpu",
         action="store_true",
         help="Move Ft/yt tensors to CUDA once at startup to reduce per-day host->device copies.",
     )
     return ap.parse_args()
-
-
-def set_random_seed(seed: int):
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 
 def pick_device(device_str: str) -> torch.device:
@@ -193,7 +184,7 @@ def cross_sectional_regression(factor, returns):
     return float(cross_sectional_regression_torch(factor, returns).item())
 
 
-def compute_loss(deep_factor, f_hat, returns, lambda_attn=0.05, lambda_ic=1.0, lambda_b=0.01):
+def compute_loss(deep_factor, f_hat, returns, lambda_attn=0.05, lambda_ic=1.0):
     """
     計算 DMFM 損失函數（論文公式 13）
 
@@ -205,7 +196,6 @@ def compute_loss(deep_factor, f_hat, returns, lambda_attn=0.05, lambda_ic=1.0, l
         returns: [N] 真實報酬
         lambda_attn: 注意力損失權重
         lambda_ic: IC 損失權重
-        lambda_b: Factor return 權重
 
     回傳：
         loss: 總損失
@@ -229,6 +219,7 @@ def compute_loss(deep_factor, f_hat, returns, lambda_attn=0.05, lambda_ic=1.0, l
     ic_penalty_tensor = 1.0 - ic_tensor  # 最小化 (1 - IC) 等價於最大化 IC
 
     # 4. 綜合損失（降低 factor return 的權重以提高穩定性）
+    lambda_b = 0.01  # Factor return 權重
     loss = lambda_attn * d + lambda_ic * ic_penalty_tensor - lambda_b * b_tensor
 
     metrics = {
@@ -276,7 +267,7 @@ def filter_edge_index(edge_index, mask):
 
 
 def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei, dynamic_graphs,
-                    train_indices, lambda_attn, lambda_ic, lambda_b, device):
+                    train_indices, lambda_attn, lambda_ic, device):
     """訓練一個 epoch"""
     model.train()
 
@@ -327,7 +318,7 @@ def train_one_epoch(model, optimizer, Ft, yt, industry_ei, universe_ei, dynamic_
         f_hat = model.interpret_factor(x_t, attn_weights, x_norm=contexts.get("x_norm"))
 
         # 計算損失
-        loss, metrics = compute_loss(deep_factor, f_hat, y_t, lambda_attn, lambda_ic, lambda_b)
+        loss, metrics = compute_loss(deep_factor, f_hat, y_t, lambda_attn, lambda_ic)
 
         # 檢查 NaN/Inf
         if torch.isnan(loss) or torch.isinf(loss):
@@ -399,8 +390,6 @@ def evaluate(model, Ft, yt, industry_ei, universe_ei, test_indices, device, dyna
         # 計算指標
         ic = compute_ic(deep_factor, y_t)
         b = cross_sectional_regression(deep_factor, y_t)
-        # 截斷 b 以防 factor variance 崩潰時爆炸（與 compute_loss 中的 torch.clamp 一致）
-        b = max(min(b, 10.0), -10.0)
 
         all_ics.append(ic)
         all_factor_returns.append(b)
@@ -428,7 +417,6 @@ def evaluate(model, Ft, yt, industry_ei, universe_ei, test_indices, device, dyna
 
 def main():
     args = parse_args()
-    set_random_seed(args.seed)
 
     # Device
     device = pick_device(args.device)
@@ -505,8 +493,6 @@ def main():
         "weight_decay": args.weight_decay,
         "lambda_attn": args.lambda_attn,
         "lambda_ic": args.lambda_ic,
-        "lambda_b": args.lambda_b,
-        "seed": args.seed,
         "preload_gpu": bool(args.preload_gpu),
     }
 
@@ -533,11 +519,11 @@ def main():
         train_metrics = train_one_epoch(
             model, optimizer, Ft, yt, industry_ei, universe_ei,
             dynamic_graphs,
-            train_indices, args.lambda_attn, args.lambda_ic, args.lambda_b, device
+            train_indices, args.lambda_attn, args.lambda_ic, device
         )
 
-        # 評估（每 2 個 epoch 評估一次，讓 best-checkpoint 定位更精確）
-        if epoch % 2 == 0 or epoch == args.epochs:
+        # 評估
+        if epoch % 5 == 0 or epoch == args.epochs:
             eval_metrics = evaluate(
                 model, Ft, yt, industry_ei, universe_ei, monitor_indices, device, dynamic_graphs
             )

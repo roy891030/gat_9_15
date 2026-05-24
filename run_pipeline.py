@@ -13,17 +13,13 @@ import copy
 import concurrent.futures
 import json
 import os
-import pickle
 import shutil
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
-
-import torch
 
 from graph_utils import dynamic_graph_files_exist
 
@@ -78,12 +74,9 @@ SMOKE_BASELINE = BaselineConfig(
 )
 
 FULL_DMFM_BY_WINDOW = {
-    "short":  DMFMConfig(epochs=50,  lr=1e-4,  patience=20),
-    "medium": DMFMConfig(epochs=100, lr=1e-4,  patience=30),
-    # Long window: 1062 stocks × 1460 days → heavy overfitting risk.
-    # Increase dropout (0.1→0.3) and reduce lr (1e-4→5e-5) to slow overfitting;
-    # patience=30 still reasonable (evaluating every 2 epochs = 60 epochs grace).
-    "long":   DMFMConfig(epochs=100, lr=5e-5, patience=30, dropout=0.3),
+    "short": DMFMConfig(epochs=50, lr=1e-4, patience=20),
+    "medium": DMFMConfig(epochs=100, lr=1e-4, patience=30),
+    "long": DMFMConfig(epochs=100, lr=1e-4, patience=30),
 }
 FULL_BASELINE = BaselineConfig(
     lstm_epochs=30,
@@ -142,32 +135,18 @@ def parse_model_list(raw: str) -> List[str]:
     return out
 
 
-def run_cmd(cmd: List[str], log_path: Path, dry_run: bool = False) -> Optional[float]:
+def run_cmd(cmd: List[str], log_path: Path, dry_run: bool = False):
     cmd_str = " ".join(cmd)
     print(f"\n$ {cmd_str}")
     print(f"  log -> {log_path}")
     if dry_run:
-        return None
+        return
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    started_at = datetime.now()
-    t0 = time.perf_counter()
     with open(log_path, "w", encoding="utf-8") as logf:
-        print(f"[timing] command_started_at={started_at.isoformat(timespec='seconds')}", file=logf)
-        print(f"[timing] command={cmd_str}", file=logf)
-        print("-" * 72, file=logf)
-        logf.flush()
         proc = subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT, text=True)
-        duration_sec = time.perf_counter() - t0
-        finished_at = datetime.now()
-        print("-" * 72, file=logf)
-        print(f"[timing] command_finished_at={finished_at.isoformat(timespec='seconds')}", file=logf)
-        print(f"[timing] command_duration_sec={duration_sec:.3f}", file=logf)
-        print(f"[timing] command_returncode={proc.returncode}", file=logf)
     if proc.returncode != 0:
         raise RuntimeError(f"Command failed ({proc.returncode}): {cmd_str}\nSee log: {log_path}")
-    print(f"  finished in {duration_sec:.1f}s")
-    return duration_sec
 
 
 def graph_mode_from_args(args) -> str:
@@ -248,173 +227,12 @@ def ensure_artifact(
                 str(args.universe_top_k),
             ]
         )
-    if args.cache_parquet:
-        cmd.append("--cache_parquet")
     run_cmd(cmd, log_path=log_path, dry_run=args.dry_run)
     graph_mode = getattr(args, "graph_mode", None)
     if graph_mode:
         summary["artifacts"].setdefault(graph_mode, {})[window] = str(artifact_dir)
     else:
         summary["artifacts"][window] = str(artifact_dir)
-
-
-def date_key(value) -> str:
-    return str(value)[:10]
-
-
-def merged_window_spec(windows: Sequence[str]) -> Dict[str, str]:
-    specs = [WINDOW_SPECS[w] for w in windows]
-    return {
-        "start": min(spec["start"] for spec in specs),
-        "end": max(spec["end"] for spec in specs),
-    }
-
-
-def copy_or_link(src: Path, dst: Path, dry_run: bool = False):
-    if dry_run:
-        print(f"[dry-run] link/copy {src} -> {dst}")
-        return
-    if not src.exists():
-        raise FileNotFoundError(f"Expected artifact not found: {src}")
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists():
-        dst.unlink()
-    try:
-        os.link(src, dst)
-    except OSError:
-        shutil.copy2(src, dst)
-
-
-def slice_dynamic_list(src: Path, dst: Path, indices: List[int], dry_run: bool = False):
-    if dry_run:
-        print(f"[dry-run] slice dynamic graph {src} -> {dst} ({len(indices)} days)")
-        return
-    data = torch.load(src, map_location="cpu")
-    torch.save([data[i] for i in indices], dst)
-
-
-def ensure_window_view_artifact(
-    full_artifact_dir: Path,
-    window_artifact_dir: Path,
-    window: str,
-    spec: Dict[str, str],
-    args,
-):
-    """Create a lightweight per-window artifact by slicing tensors from one full artifact."""
-    full_meta_path = full_artifact_dir / "meta.pkl"
-    view_meta_path = window_artifact_dir / "meta.pkl"
-    ft_path = window_artifact_dir / "Ft_tensor.pt"
-
-    if (
-        ft_path.exists()
-        and view_meta_path.exists()
-        and not args.rebuild_artifacts
-        and not args.skip_build
-    ):
-        print(f"[build] reuse window artifact view: {window_artifact_dir}")
-        return
-
-    if args.skip_build:
-        if not ft_path.exists():
-            raise FileNotFoundError(f"--skip-build used but missing window artifact view: {window_artifact_dir}")
-        print(f"[skip-build] use existing window artifact view: {window_artifact_dir}")
-        return
-
-    if args.dry_run:
-        print(
-            f"[dry-run] create window artifact view {window}: "
-            f"{spec['start']} ~ {spec['end']} from {full_artifact_dir}"
-        )
-        return
-
-    if not full_meta_path.exists():
-        raise FileNotFoundError(f"Missing full artifact metadata: {full_meta_path}")
-
-    started = time.perf_counter()
-    window_artifact_dir.mkdir(parents=True, exist_ok=True)
-    with open(full_meta_path, "rb") as f:
-        meta = pickle.load(f)
-
-    dates = meta.get("dates", [])
-    indices = [
-        i
-        for i, d in enumerate(dates)
-        if spec["start"] <= date_key(d) <= spec["end"]
-    ]
-    if not indices:
-        raise ValueError(
-            f"No dates found for window={window} range={spec['start']}~{spec['end']} "
-            f"in full artifact {full_artifact_dir}"
-        )
-
-    for name in ("Ft_tensor.pt", "yt_tensor.pt", "yraw_tensor.pt"):
-        tensor = torch.load(full_artifact_dir / name, map_location="cpu")
-        torch.save(tensor[indices], window_artifact_dir / name)
-
-    for name in ("industry_edge_index.pt", "universe_edge_index.pt"):
-        copy_or_link(full_artifact_dir / name, window_artifact_dir / name, dry_run=args.dry_run)
-
-    dynamic_names = (
-        "dynamic_industry_edge_indices.pt",
-        "dynamic_industry_edge_attrs.pt",
-        "dynamic_universe_edge_indices.pt",
-        "dynamic_universe_edge_attrs.pt",
-    )
-    has_dynamic = all((full_artifact_dir / name).exists() for name in dynamic_names)
-    if has_dynamic:
-        for name in dynamic_names:
-            slice_dynamic_list(full_artifact_dir / name, window_artifact_dir / name, indices, dry_run=args.dry_run)
-        copy_or_link(full_artifact_dir / "dynamic_graph_meta.json", window_artifact_dir / "dynamic_graph_meta.json")
-    else:
-        for name in (*dynamic_names, "dynamic_graph_meta.json"):
-            stale = window_artifact_dir / name
-            if stale.exists():
-                stale.unlink()
-
-    view_meta = dict(meta)
-    view_meta["dates"] = [dates[i] for i in indices]
-    view_meta["window"] = window
-    view_meta["window_start"] = spec["start"]
-    view_meta["window_end"] = spec["end"]
-    view_meta["source_artifact_dir"] = str(full_artifact_dir)
-    view_meta["shared_artifact_view"] = True
-    view_meta["num_days"] = len(indices)
-    if not has_dynamic:
-        view_meta["dynamic_graphs"] = {"enabled": False}
-    with open(view_meta_path, "wb") as f:
-        pickle.dump(view_meta, f)
-
-    print(
-        f"[build] window artifact view ready: {window_artifact_dir} "
-        f"({len(indices)} days, {time.perf_counter() - started:.1f}s)"
-    )
-
-
-def ensure_shared_artifacts(
-    py: str,
-    windows: Sequence[str],
-    graph_mode: Optional[str],
-    args,
-    summary: Dict[str, object],
-) -> Dict[str, Path]:
-    current_args = mode_args(args, graph_mode)
-    full_spec = merged_window_spec(windows)
-    full_dir = artifact_dir_for_mode(args, graph_mode, args.shared_artifact_name)
-    ensure_artifact(py, args.shared_artifact_name, full_spec, current_args, full_dir, summary)
-    out: Dict[str, Path] = {}
-    for window in windows:
-        spec = WINDOW_SPECS[window]
-        view_dir = artifact_dir_for_mode(args, graph_mode, window)
-        ensure_window_view_artifact(full_dir, view_dir, window, spec, current_args)
-        out[window] = view_dir
-        mode_label = graph_mode_from_args(current_args)
-        if graph_mode:
-            summary["artifacts"].setdefault(mode_label, {})[window] = str(view_dir)
-            summary["artifacts"].setdefault(mode_label, {})[args.shared_artifact_name] = str(full_dir)
-        else:
-            summary["artifacts"][window] = str(view_dir)
-            summary["artifacts"][args.shared_artifact_name] = str(full_dir)
-    return out
 
 
 def copy_json_artifact(src: Path, dst: Path, dry_run: bool = False):
@@ -454,8 +272,6 @@ def run_baseline(
             str(args.val_ratio),
             "--device",
             args.device,
-            "--seed",
-            str(args.seed),
         ]
         if baseline_model == "xgboost":
             cmd.extend(
@@ -556,16 +372,12 @@ def run_factor_variant(py: str, window: str, artifact_dir: Path, variant: str, a
             str(cfg.lambda_attn),
             "--lambda_ic",
             str(cfg.lambda_ic),
-            "--lambda_b",
-            str(args.lambda_b),
             "--patience",
             str(cfg.patience),
             "--train_ratio",
             str(args.train_ratio),
             "--val_ratio",
             str(args.val_ratio),
-            "--seed",
-            str(args.seed),
         ]
         if args.preload_gpu:
             cmd_train.append("--preload_gpu")
@@ -657,7 +469,7 @@ def parse_args():
     )
     ap.add_argument(
         "--graph_modes",
-        default="static",
+        default="",
         help=(
             "comma list: static,dynamic. When set, the same windows/models are run under "
             "separate artifact/output subfolders so static and dynamic graph results share one summary."
@@ -688,8 +500,6 @@ def parse_args():
     ap.add_argument("--rebalance_days", type=int, default=5)
     ap.add_argument("--train_ratio", type=float, default=0.8)
     ap.add_argument("--val_ratio", type=float, default=0.1)
-    ap.add_argument("--lambda_b", type=float, default=0.01, help="Factor return loss weight for DMFM/factor variants")
-    ap.add_argument("--seed", type=int, default=42, help="Random seed passed to training subprocesses")
     ap.add_argument("--device", default="auto")
     ap.add_argument(
         "--parallel_jobs",
@@ -705,21 +515,6 @@ def parse_args():
     ap.add_argument("--skip_build", action="store_true")
     ap.add_argument("--skip_train", action="store_true")
     ap.add_argument("--rebuild_artifacts", action="store_true")
-    ap.add_argument(
-        "--separate_artifacts",
-        action="store_true",
-        help="Build each selected window independently. Default builds one shared full artifact and slices window views.",
-    )
-    ap.add_argument(
-        "--shared_artifact_name",
-        default="_full",
-        help="Folder name for the shared full-range artifact when --separate_artifacts is not used.",
-    )
-    ap.add_argument(
-        "--cache_parquet",
-        action="store_true",
-        help="Ask build_artifacts.py to create/use a parquet cache when reading CSV prices.",
-    )
     ap.add_argument("--dry_run", action="store_true")
     return ap.parse_args()
 
@@ -805,8 +600,6 @@ def main():
         "baseline_graph_mode": args.baseline_graph_mode if args.graph_modes.strip() else None,
         "train_ratio": args.train_ratio,
         "val_ratio": args.val_ratio,
-        "lambda_b": args.lambda_b,
-        "seed": args.seed,
         "dynamic_graphs": not args.no_dynamic_graphs if not args.graph_modes.strip() else ("dynamic" in graph_modes),
         "graph_lookback": args.graph_lookback,
         "graph_min_obs": args.graph_min_obs,
@@ -814,9 +607,6 @@ def main():
         "universe_top_k": args.universe_top_k,
         "parallel_jobs": args.parallel_jobs,
         "preload_gpu": args.preload_gpu,
-        "separate_artifacts": args.separate_artifacts,
-        "shared_artifact_name": args.shared_artifact_name,
-        "cache_parquet": args.cache_parquet,
         "artifacts": {},
         "runs": [],
         "dry_run": args.dry_run,
@@ -837,40 +627,19 @@ def main():
         f"parallel_jobs={args.parallel_jobs} preload_gpu={args.preload_gpu} "
         f"skip_build={args.skip_build} skip_train={args.skip_train} dry_run={args.dry_run}"
     )
-    print(
-        f"artifact_strategy={'separate' if args.separate_artifacts else 'shared_full_then_window_views'} "
-        f"shared_artifact_name={args.shared_artifact_name} cache_parquet={args.cache_parquet}"
-    )
 
     tasks: List[Callable[[], None]] = []
-    for graph_mode in graph_modes:
-        current_args = mode_args(args, graph_mode)
-        mode_label = graph_mode_from_args(current_args)
-        window_artifacts: Dict[str, Path] = {}
-        if not args.separate_artifacts:
-            print(f"\n{'-' * 72}")
-            full_spec = merged_window_spec(windows)
-            print(
-                f"Shared artifact build ({full_spec['start']} ~ {full_spec['end']}) "
-                f"| graph_mode={mode_label}"
-            )
-            print(f"{'-' * 72}")
-            window_artifacts = ensure_shared_artifacts(py, windows, graph_mode, args, summary)
-
-        for window in windows:
-            spec = WINDOW_SPECS[window]
+    for window in windows:
+        spec = WINDOW_SPECS[window]
+        for graph_mode in graph_modes:
             current_args = mode_args(args, graph_mode)
-            artifact_dir = (
-                artifact_dir_for_mode(args, graph_mode, window)
-                if args.separate_artifacts
-                else window_artifacts[window]
-            )
+            artifact_dir = artifact_dir_for_mode(args, graph_mode, window)
+            mode_label = graph_mode_from_args(current_args)
             print(f"\n{'-' * 72}")
             print(f"Window: {window} ({spec['start']} ~ {spec['end']}) | graph_mode={mode_label}")
             print(f"{'-' * 72}")
 
-            if args.separate_artifacts:
-                ensure_artifact(py, window, spec, current_args, artifact_dir, summary)
+            ensure_artifact(py, window, spec, current_args, artifact_dir, summary)
 
             if "baseline" in models and baseline_enabled_for_mode(args, graph_mode):
                 for bm in baseline_models:
