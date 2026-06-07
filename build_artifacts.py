@@ -20,7 +20,7 @@
 - `dynamic_*_edge_attrs.pt`
 - `meta.pkl`
 """
-import argparse, json, os, pickle
+import argparse, json, math, os, pickle
 from typing import List, Dict, Tuple
 import warnings
 
@@ -51,9 +51,11 @@ def parse_args():
                     help="Rolling lookback days for graph correlation weights")
     ap.add_argument("--graph_min_obs", type=int, default=20,
                     help="Minimum valid observations for rolling graph correlations")
-    ap.add_argument("--industry_top_k", type=int, default=20,
-                    help="Max non-self same-industry neighbors per target in dynamic industry graph")
-    ap.add_argument("--universe_top_k", type=int, default=40,
+    ap.add_argument("--industry_top_k", type=int, default=None,
+                    help="Optional fixed max non-self same-industry neighbors per target; overrides --industry_top_pct")
+    ap.add_argument("--industry_top_pct", type=float, default=0.50,
+                    help="Fraction of same-industry non-self neighbors per target in dynamic industry graph")
+    ap.add_argument("--universe_top_k", type=int, default=100,
                     help="Max non-self market neighbors per target in dynamic universe graph")
     return ap.parse_args()
 
@@ -466,7 +468,20 @@ def rolling_corr_matrix(returns, t, lookback, min_obs):
     return corr
 
 
-def topk_edges_from_corr(corr, candidate_mask, top_k):
+def resolve_top_k(candidate_count: int, top_k=None, top_pct=None) -> int:
+    if candidate_count <= 0:
+        return 0
+    if top_k is not None:
+        return max(0, min(int(top_k), candidate_count))
+    if top_pct is None:
+        return candidate_count
+    pct = max(0.0, float(top_pct))
+    if pct <= 0.0:
+        return 0
+    return max(1, min(int(math.ceil(pct * candidate_count)), candidate_count))
+
+
+def topk_edges_from_corr(corr, candidate_mask, top_k=None, top_pct=None):
     N = corr.shape[0]
     abs_corr = np.abs(corr)
     src_all, dst_all, attrs = [], [], []
@@ -477,7 +492,8 @@ def topk_edges_from_corr(corr, candidate_mask, top_k):
 
         candidates = np.flatnonzero(candidate_mask[:, dst])
         candidates = candidates[candidates != dst]
-        if candidates.size == 0 or top_k <= 0:
+        k = resolve_top_k(candidates.size, top_k=top_k, top_pct=top_pct)
+        if candidates.size == 0 or k <= 0:
             continue
 
         scores = abs_corr[candidates, dst]
@@ -487,8 +503,8 @@ def topk_edges_from_corr(corr, candidate_mask, top_k):
         if candidates.size == 0:
             continue
 
-        if candidates.size > top_k:
-            top_pos = np.argpartition(scores, -top_k)[-top_k:]
+        if candidates.size > k:
+            top_pos = np.argpartition(scores, -k)[-k:]
             candidates = candidates[top_pos]
             scores = scores[top_pos]
         order = np.argsort(scores)[::-1]
@@ -505,7 +521,17 @@ def topk_edges_from_corr(corr, candidate_mask, top_k):
     return edge_index, edge_attr
 
 
-def build_dynamic_weighted_graphs(df, cm, dates, stocks, lookback, min_obs, industry_top_k, universe_top_k):
+def build_dynamic_weighted_graphs(
+    df,
+    cm,
+    dates,
+    stocks,
+    lookback,
+    min_obs,
+    industry_top_k,
+    industry_top_pct,
+    universe_top_k,
+):
     returns = build_return_matrix(df, cm, dates, stocks)
     inds = load_industry_series(df, cm, stocks)
     ind_values = inds.reindex(pd.Index(stocks)).astype(str).to_numpy()
@@ -516,7 +542,12 @@ def build_dynamic_weighted_graphs(df, cm, dates, stocks, lookback, min_obs, indu
     universe_edge_indices, universe_edge_attrs = [], []
     for t in range(len(dates)):
         corr = rolling_corr_matrix(returns, t, lookback=lookback, min_obs=min_obs)
-        ind_ei, ind_attr = topk_edges_from_corr(corr, same_industry, industry_top_k)
+        ind_ei, ind_attr = topk_edges_from_corr(
+            corr,
+            same_industry,
+            top_k=industry_top_k,
+            top_pct=None if industry_top_k is not None else industry_top_pct,
+        )
         uni_ei, uni_attr = topk_edges_from_corr(corr, universe_candidates, universe_top_k)
         industry_edge_indices.append(ind_ei)
         industry_edge_attrs.append(ind_attr)
@@ -565,6 +596,7 @@ def main():
             lookback=args.graph_lookback,
             min_obs=args.graph_min_obs,
             industry_top_k=args.industry_top_k,
+            industry_top_pct=args.industry_top_pct,
             universe_top_k=args.universe_top_k,
         )
         dynamic_graph_stats = {
@@ -573,7 +605,9 @@ def main():
             "edge_attr": ["abs_corr", "signed_corr"],
             "lookback": args.graph_lookback,
             "min_obs": args.graph_min_obs,
+            "industry_selection": "top_k" if args.industry_top_k is not None else "top_pct",
             "industry_top_k": args.industry_top_k,
+            "industry_top_pct": args.industry_top_pct,
             "universe_top_k": args.universe_top_k,
             "avg_industry_edges": float(np.mean([ei.shape[1] for ei in dynamic_industry_edge_indices])),
             "avg_universe_edges": float(np.mean([ei.shape[1] for ei in dynamic_universe_edge_indices])),

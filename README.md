@@ -36,8 +36,8 @@
 
 預設會建立 dynamic weighted graph：
 
-- Industry graph: 每日 rolling return correlation，同產業 top-k 加權邊
-- Universe graph: 每日 rolling return correlation，全市場 top-k 加權邊
+- Industry graph: 每日 rolling return correlation，同產業非自身候選取 top 50% 加權邊
+- Universe graph: 每日 rolling return correlation，全市場 top 100 加權邊
 - Edge attribute: `[abs_corr, signed_corr]`
 - 舊 static binary graph 仍保留作 fallback；如果要強制不用 dynamic graph，加入 `--no_dynamic_graphs`
 
@@ -52,8 +52,8 @@
   --rebuild_artifacts \
   --graph_lookback 60 \
   --graph_min_obs 20 \
-  --industry_top_k 20 \
-  --universe_top_k 40
+  --industry_top_pct 0.5 \
+  --universe_top_k 100
 ```
 
 只做 smoke test：

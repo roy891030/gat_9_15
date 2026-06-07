@@ -223,12 +223,14 @@ def ensure_artifact(
                 str(args.graph_lookback),
                 "--graph_min_obs",
                 str(args.graph_min_obs),
-                "--industry_top_k",
-                str(args.industry_top_k),
+                "--industry_top_pct",
+                str(args.industry_top_pct),
                 "--universe_top_k",
                 str(args.universe_top_k),
             ]
         )
+        if args.industry_top_k is not None:
+            cmd.extend(["--industry_top_k", str(args.industry_top_k)])
     run_cmd(cmd, log_path=log_path, dry_run=args.dry_run)
     graph_mode = getattr(args, "graph_mode", None)
     if graph_mode:
@@ -496,8 +498,14 @@ def parse_args():
     ap.add_argument("--no_dynamic_graphs", action="store_true", help="Use static binary graph artifacts")
     ap.add_argument("--graph_lookback", type=int, default=60)
     ap.add_argument("--graph_min_obs", type=int, default=20)
-    ap.add_argument("--industry_top_k", type=int, default=20)
-    ap.add_argument("--universe_top_k", type=int, default=40)
+    ap.add_argument(
+        "--industry_top_k",
+        type=int,
+        default=None,
+        help="Optional fixed industry graph top-k; overrides --industry_top_pct.",
+    )
+    ap.add_argument("--industry_top_pct", type=float, default=0.50)
+    ap.add_argument("--universe_top_k", type=int, default=100)
     ap.add_argument("--top_pct", type=float, default=0.10)
     ap.add_argument("--rebalance_days", type=int, default=5)
     ap.add_argument("--train_ratio", type=float, default=0.8)
@@ -605,6 +613,7 @@ def main():
         "dynamic_graphs": not args.no_dynamic_graphs if not args.graph_modes.strip() else ("dynamic" in graph_modes),
         "graph_lookback": args.graph_lookback,
         "graph_min_obs": args.graph_min_obs,
+        "industry_top_pct": args.industry_top_pct,
         "industry_top_k": args.industry_top_k,
         "universe_top_k": args.universe_top_k,
         "parallel_jobs": args.parallel_jobs,
@@ -623,6 +632,7 @@ def main():
     print(
         f"dynamic_graphs={summary['dynamic_graphs']} "
         f"lookback={args.graph_lookback} min_obs={args.graph_min_obs} "
+        f"industry_top_pct={args.industry_top_pct} "
         f"industry_top_k={args.industry_top_k} universe_top_k={args.universe_top_k}"
     )
     print(
