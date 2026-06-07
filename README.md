@@ -23,6 +23,17 @@
 
 ## 快速開始
 
+預設資料來源：
+
+- `newData/newData_twse_stock_2014q1_2025q4_appended.csv`
+- benchmark: `GAT0050.csv`
+
+預設時間窗對齊 `runs_gpu_static_to_20250601`：
+
+- `short`: 2023-01-01 ~ 2025-06-01（實際交易日 2023-01-03 ~ 2025-05-29）
+- `medium`: 2019-01-01 ~ 2025-06-01（實際交易日 2019-01-02 ~ 2025-05-29）
+- `long`: 2014-01-01 ~ 2025-06-01（實際交易日 2014-01-02 ~ 2025-05-29）
+
 預設會建立 dynamic weighted graph：
 
 - Industry graph: 每日 rolling return correlation，同產業 top-k 加權邊
@@ -109,6 +120,23 @@ python run_pipeline.py \
   --output_root runs_unified \
   --rebuild_artifacts \
   --parallel_jobs 2 \
+  --preload_gpu
+```
+
+若要重跑與 `runs_gpu_static_to_20250601` 相同的 static-only 口徑：
+
+```bash
+cd /workspace/gat_9_15
+python run_pipeline.py \
+  --models baseline,factor_variants \
+  --windows short,medium,long \
+  --mode full \
+  --device cuda \
+  --graph_modes static \
+  --baseline_graph_mode static \
+  --artifact_root artifacts_gpu_static_to_20250601 \
+  --output_root runs_gpu_static_to_20250601 \
+  --rebuild_artifacts \
   --preload_gpu
 ```
 

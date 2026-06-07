@@ -25,10 +25,12 @@ from graph_utils import dynamic_graph_files_exist
 
 
 WINDOW_SPECS: Dict[str, Dict[str, str]] = {
-    "short": {"start": "2019-09-16", "end": "2020-12-31"},
-    "medium": {"start": "2019-09-16", "end": "2022-12-31"},
-    "long": {"start": "2014-01-02", "end": "2025-12-31"},
+    "short": {"start": "2023-01-01", "end": "2025-06-01"},
+    "medium": {"start": "2019-01-01", "end": "2025-06-01"},
+    "long": {"start": "2014-01-01", "end": "2025-06-01"},
 }
+
+DEFAULT_DATA_CSV = "newData/newData_twse_stock_2014q1_2025q4_appended.csv"
 
 FACTOR_MODELS = [
     "mlp",
@@ -485,8 +487,8 @@ def parse_args():
         ),
     )
     ap.add_argument("--mode", choices=["smoke", "full"], default="full")
-    ap.add_argument("--prices", default="unique_2019q3to2025q3.csv")
-    ap.add_argument("--industry_csv", default="unique_2019q3to2025q3.csv")
+    ap.add_argument("--prices", default=DEFAULT_DATA_CSV)
+    ap.add_argument("--industry_csv", default=DEFAULT_DATA_CSV)
     ap.add_argument("--benchmark_csv", default="GAT0050.csv")
     ap.add_argument("--artifact_root", default="artifacts")
     ap.add_argument("--output_root", default="runs")
