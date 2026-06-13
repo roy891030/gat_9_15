@@ -17,6 +17,7 @@ python evaluate_metrics.py \
 
 import os
 import argparse
+from pathlib import Path
 import numpy as np
 import torch
 import pandas as pd
@@ -177,7 +178,7 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
     """
     model.eval()
     preds, truths = [], []
-    daily_ic, daily_dir = [], []
+    daily_ic, daily_ic_t, daily_dir = [], [], []
     daily_ic_ind = []
     resP_all, resY_all = [], []
     all_attentions = []  # 儲存注意力權重（若 DMFM）
@@ -223,6 +224,7 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
         c = safe_corr(P, Y)
         if c == c:
             daily_ic.append(c)
+            daily_ic_t.append(t)  # 記錄對應時間索引，用於後續對應日期
 
         # 方向準確率
         daily_dir.append(float((np.sign(P) == np.sign(Y)).mean()))
@@ -295,6 +297,7 @@ def eval_indices(model, Ft, yt, edge_industry, edge_universe, indices,
         out["predictions"] = preds
         out["truths"] = truths
         out["daily_ic_series"] = daily_ic
+        out["daily_ic_t"] = daily_ic_t  # 對應的時間索引
         if all_attentions:
             out["attention_weights"] = all_attentions
 
@@ -409,8 +412,8 @@ def main():
                       device=device, inds=inds, dynamic_graphs=dynamic_graphs)
 
     print("評估測試集...")
-    te = eval_indices(model, Ft, yt, edge_industry, edge_universe, test_idx, 
-                      device=device, inds=inds, return_predictions=False, dynamic_graphs=dynamic_graphs)
+    te = eval_indices(model, Ft, yt, edge_industry, edge_universe, test_idx,
+                      device=device, inds=inds, return_predictions=True, dynamic_graphs=dynamic_graphs)
 
     print_metrics("訓練集", tr, has_industry=has_industry)
     print_metrics("驗證集", va, has_industry=has_industry)
@@ -471,6 +474,22 @@ def main():
             "test": te,
             "has_industry_labels": has_industry,
         }
+
+        # 存出逐日 IC 序列，供 stability_tests.py Phase 2 使用
+        _ARRAY_KEYS = ("predictions", "truths", "daily_ic_series", "daily_ic_t", "attention_weights")
+        if te.get("daily_ic_series") and te.get("daily_ic_t"):
+            all_dates = meta.get("dates", [])
+            ic_rows = [
+                {"date": str(all_dates[t_idx])[:10], "ic": float(ic_val)}
+                for t_idx, ic_val in zip(te["daily_ic_t"], te["daily_ic_series"])
+            ]
+            csv_path = Path(args.out_json).parent / "daily_ic_series.csv"
+            pd.DataFrame(ic_rows).to_csv(csv_path, index=False)
+            print(f"逐日 IC 序列已儲存至: {csv_path}")
+
+        # 移除 numpy array 欄位，避免 JSON 序列化失敗
+        for _k in _ARRAY_KEYS:
+            te.pop(_k, None)
         save_json(args.out_json, payload)
         print(f"結構化評估結果已儲存至: {args.out_json}")
 
